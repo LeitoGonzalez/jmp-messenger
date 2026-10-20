@@ -1,0 +1,22 @@
+{
+  "name": "chat-proy",
+  "version": "1.0.0",
+  "description": "Chat Cliente/Servidor sobre WebSockets con protocolo JMP (JSON Message Protocol) - UTN FRM",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "test:client": "node scripts/test-client.js"
+  },
+  "keywords": [
+    "chat",
+    "websocket",
+    "sockets",
+    "redes"
+  ],
+  "license": "ISC",
+  "dependencies": {
+    "express": "^5.1.0",
+    "ws": "^8.18.0"
+  }
+}
