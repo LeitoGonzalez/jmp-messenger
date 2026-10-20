@@ -1,4 +1,4 @@
-# 💬 Chat Cliente/Servidor — Protocolo JMP sobre WebSockets
+# Chat Cliente/Servidor — Protocolo JMP sobre WebSockets
 
 > **Proyecto grupal** desarrollado para la materia **Redes de Información** — UTN Facultad Regional Mendoza, 2026.
 >
@@ -13,24 +13,24 @@ Aplicación de mensajería instantánea con arquitectura **Cliente/Servidor en e
 
 ---
 
-## 🚀 Funcionalidades y Estado de Cumplimiento
+## Funcionalidades y Estado de Cumplimiento
 
 | Requisito de la cátedra | Implementación Técnica | Estado |
 |---|---|---|
-| **Múltiples canales de chat** | `JOIN_CHANNEL` / `LEAVE_CHANNEL` / `CHANNEL_MSG` (Pub/Sub) | ✅ Etapa 2 |
-| **Mensajes privados** | `PRIVATE_MSG` (Unicast con entrega diferida *offline*) | ✅ Etapa 2 |
-| **Protocolo de mensajería** | **JMP** propio sobre WebSocket (inspirado en XMPP) | ✅ Etapa 1 |
-| **Guardar conversaciones** | SQLite (`better-sqlite3`) + `FETCH_HISTORY` + Exportación TXT | ✅ Etapa 2 & 5 |
-| **Registro de información (logging)** | Auditado en `server.log` con formato estandarizado | ✅ Etapa 1 |
-| **Perfil de usuario y foto** | `AUTH_REGISTER` / `PROFILE_UPDATE` con avatar en Base64 | ✅ Etapa 3 |
-| **Envío de archivos a un usuario** | `FILE_OFFER` + servidor de archivos HTTP (Express) | ✅ Etapa 4 |
-| **Interfaz Gráfica de Usuario (GUI)** | Frontend Web Vanilla (HTML5, CSS3 Glassmorphism, JS ES6+) | ✅ Etapa 5 |
+| **Múltiples canales de chat** | `JOIN_CHANNEL` / `LEAVE_CHANNEL` / `CHANNEL_MSG` (Pub/Sub) | Completado (Etapa 2) |
+| **Mensajes privados** | `PRIVATE_MSG` (Unicast con entrega diferida *offline*) | Completado (Etapa 2) |
+| **Protocolo de mensajería** | **JMP** propio sobre WebSocket (inspirado en XMPP) | Completado (Etapa 1) |
+| **Guardar conversaciones** | SQLite (`better-sqlite3`) + `FETCH_HISTORY` + Exportación TXT | Completado (Etapa 2 y 5) |
+| **Registro de información (logging)** | Auditado en `server.log` con formato estandarizado | Completado (Etapa 1) |
+| **Perfil de usuario y foto** | `AUTH_REGISTER` / `PROFILE_UPDATE` con avatar en Base64 | Completado (Etapa 3) |
+| **Envío de archivos a un usuario** | `FILE_OFFER` + servidor de archivos HTTP (Express) | Completado (Etapa 4) |
+| **Interfaz Gráfica de Usuario (GUI)** | Frontend Web Vanilla (HTML5, CSS3 Glassmorphism, JS ES6+) | Completado (Etapa 5) |
 
 **Robustez de red:** Heartbeat activo Ping/Pong (30 s), manejo defensivo de `ECONNRESET`/`EPIPE`, auto-reconexión en clientes, captura de excepciones sin caídas del proceso y validación estricta del esquema de cada PDU.
 
 ---
 
-## 📐 Arquitectura del Sistema
+## Arquitectura del Sistema
 
 ```text
   [Cliente Web A] <----+
@@ -60,14 +60,14 @@ Toda PDU (*Protocol Data Unit*) es un objeto JSON codificado en UTF-8:
   },
   "body": { 
     "channel": "Redes", 
-    "content": "¡Hola a todos!" 
+    "content": "Hola a todos" 
   }
 }
 ```
 
 ---
 
-## 🛠️ Cómo correrlo
+## Como correrlo
 
 Requisitos: **Node.js 20+**
 
@@ -104,30 +104,30 @@ npm test             # Ejecuta los 17 tests automáticos end-to-end
 
 ---
 
-## 📂 Estructura del Proyecto
+## Estructura del Proyecto
 
 ```text
 chat-proy/
-├── package.json            ← Dependencias (express, ws, better-sqlite3)
+├── package.json            <- Dependencias (express, ws, better-sqlite3)
 ├── data/
-│   └── chat.db             ← Base de datos SQLite relacional (auto-generada)
+│   └── chat.db             <- Base de datos SQLite relacional (auto-generada)
 ├── server/
-│   ├── index.js            ← Arranque HTTP + WebSocket + Heartbeat + API Upload
-│   ├── protocol.js         ← Protocolo JMP: catálogo de primitivas y validación
-│   ├── handlers.js         ← Router de primitivas (Pub/Sub, Unicast, Auth, Archivos)
-│   ├── state.js            ← Estado en memoria (ClientsMap y ChannelsMap)
-│   ├── storage.js          ← Motor de persistencia (SQLite Prepared Statements)
-│   ├── auth.js             ← Hash y verificación de contraseñas (scrypt)
-│   ├── logger.js           ← Módulo de logging auditado
-│   └── uploads/            ← Almacenamiento físico de archivos transferidos
-├── client/                 ← Interfaz gráfica web (Vanilla Web Stack)
-│   ├── index.html          ← Estructura semántica (Apple ID modal, Split View)
-│   ├── styles.css          ← Estilos Apple Minimalista (macOS Dark, iMessage)
-│   └── app.js              ← Lógica cliente, WebSocket JMP, Canvas y Uploads
+│   ├── index.js            <- Arranque HTTP + WebSocket + Heartbeat + API Upload
+│   ├── protocol.js         <- Protocolo JMP: catálogo de primitivas y validación
+│   ├── handlers.js         <- Router de primitivas (Pub/Sub, Unicast, Auth, Archivos)
+│   ├── state.js            <- Estado en memoria (ClientsMap y ChannelsMap)
+│   ├── storage.js          <- Motor de persistencia (SQLite Prepared Statements)
+│   ├── auth.js             <- Hash y verificación de contraseñas (scrypt)
+│   ├── logger.js           <- Módulo de logging auditado
+│   └── uploads/            <- Almacenamiento físico de archivos transferidos
+├── client/                 <- Interfaz gráfica web (Vanilla Web Stack)
+│   ├── index.html          <- Estructura semántica (Apple ID modal, Split View)
+│   ├── styles.css          <- Estilos Apple Minimalista (macOS Dark, iMessage)
+│   └── app.js              <- Lógica cliente, WebSocket JMP, Canvas y Uploads
 ├── scripts/
-│   ├── test-client.js      ← Cliente de consola interactivo para pruebas
-│   └── test-etapa2.js      ← Suite de 17 tests automáticos end-to-end
-└── docs/                   ← Documentación técnica académica para la defensa
+│   ├── test-client.js      <- Cliente de consola interactivo para pruebas
+│   └── test-etapa2.js      <- Suite de 17 tests automáticos end-to-end
+└── docs/                   <- Documentación técnica académica para la defensa
     ├── etapa-1-servidor-base.md
     ├── etapa-2-canales-privados.md
     ├── etapa-3-perfil-avatar.md
@@ -137,10 +137,10 @@ chat-proy/
 
 ---
 
-## 📚 Documentación Técnica por Etapas
+## Documentación Técnica por Etapas
 
-* 📄 [Etapa 1 — Servidor Base, Protocolo JMP, Logging y Heartbeat](docs/etapa-1-servidor-base.md)
-* 📄 [Etapa 2 — Canales, Mensajes Privados, Persistencia SQLite y Autenticación](docs/etapa-2-canales-privados.md)
-* 📄 [Etapa 3 — Perfil de Usuario, Estado Personalizado y Avatar en Base64](docs/etapa-3-perfil-avatar.md)
-* 📄 [Etapa 4 — Transferencia de Archivos Híbrida (HTTP + Señalización WebSockets)](docs/etapa-4-transferencia-archivos.md)
-* 📄 [Etapa 5 — Interfaz Gráfica Web, Estética Apple Minimalista y Canvas Client-Side](docs/etapa-5-cliente-web.md)
+* [Etapa 1 — Servidor Base, Protocolo JMP, Logging y Heartbeat](docs/etapa-1-servidor-base.md)
+* [Etapa 2 — Canales, Mensajes Privados, Persistencia SQLite y Autenticación](docs/etapa-2-canales-privados.md)
+* [Etapa 3 — Perfil de Usuario, Estado Personalizado y Avatar en Base64](docs/etapa-3-perfil-avatar.md)
+* [Etapa 4 — Transferencia de Archivos Híbrida (HTTP + Señalización WebSockets)](docs/etapa-4-transferencia-archivos.md)
+* [Etapa 5 — Interfaz Gráfica Web, Estética Apple Minimalista y Canvas Client-Side](docs/etapa-5-cliente-web.md)
