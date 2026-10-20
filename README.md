@@ -1,4 +1,4 @@
-# 💬 Chat Cliente/Servidor — Protocolo JMP sobre WebSockets
+#  Chat Cliente/Servidor — Protocolo JMP sobre WebSockets
 
 > **Proyecto grupal** desarrollado para la materia **Redes de Datos** — UTN Facultad Regional Mendoza, 2026.
 >
@@ -13,7 +13,7 @@ Aplicación de mensajería instantánea con arquitectura **Cliente/Servidor en e
 
 ---
 
-## ✨ Funcionalidades
+##  Funcionalidades
 
 | Requisito de la cátedra | Implementación | Estado |
 |---|---|---|
@@ -29,7 +29,7 @@ Aplicación de mensajería instantánea con arquitectura **Cliente/Servidor en e
 
 ---
 
-## 🏗️ Arquitectura
+##  Arquitectura
 
 ```
   [Cliente A] <----+
@@ -55,7 +55,7 @@ Aplicación de mensajería instantánea con arquitectura **Cliente/Servidor en e
 
 ---
 
-## 🚀 Cómo correrlo
+##  Cómo correrlo
 
 Requisitos: **Node.js 20+**
 
@@ -79,7 +79,7 @@ node scripts/test-client.js Carlos
 
 ---
 
-## 📁 Estructura
+##  Estructura
 
 ```
 server/
@@ -92,24 +92,8 @@ scripts/        Clientes y pruebas
 docs/           Documentación técnica por etapa
 ```
 
-## 📚 Documentación
+##  Documentación
 
 - [Etapa 1 — Servidor base](docs/etapa-1-servidor-base.md)
 
 ---
-
-## 👥 Equipo
-
-Proyecto realizado en grupo para **Redes de Datos (UTN FRM, 2026)**. Publicado en portfolio con el acuerdo de sus integrantes.
-
-| Integrante |
-|---|
-| Leonardo Gonzalez |
-| Alexandra Fernandez |
-| Daniela Illanes |
-| Julieta Paoloni |
-| Santiago Cucchiarell |
-
-## 📄 Licencia
-
-[MIT](LICENSE) © 2026 — Leonardo Gonzalez, Alexandra Fernandez, Daniela Illanes, Julieta Paoloni, Santiago Cucchiarell.
