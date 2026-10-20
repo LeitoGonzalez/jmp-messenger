@@ -1,12 +1,25 @@
 /**
- * Handlers de cada primitiva JMP.
- * Etapa 1: AUTH_REGISTER + USER_PRESENCE + desconexión.
- * El resto de primitivas se implementan en las próximas etapas.
+ * Handlers de cada primitiva JMP + router.
+ *
+ * Etapa 1: AUTH_REGISTER, USER_PRESENCE, desconexión.
+ * Etapa 2: login con contraseña, JOIN/LEAVE_CHANNEL, CHANNEL_MSG (pub/sub),
+ *          PRIVATE_MSG (unicast + entrega diferida), FETCH_HISTORY.
  */
-const { randomUUID } = require('crypto');
 const { build, TYPES } = require('./protocol');
 const state = require('./state');
+const storage = require('./storage');
+const { hashPassword, verifyPassword } = require('./auth');
 const logger = require('./logger');
+
+const USERNAME_RE = /^[\w.\-áéíóúñÁÉÍÓÚÑ]{2,20}$/;
+const CHANNEL_RE = /^[\w\-áéíóúñÁÉÍÓÚÑ]{2,24}$/;
+const MIN_PASSWORD = 4;
+const MAX_CONTENT = 4000;
+const DEFAULT_CHANNEL = 'General';
+
+// ======================================================================
+// Utilidades de envío
+// ======================================================================
 
 /** Envío seguro: captura EPIPE / socket cerrado sin romper el servidor. */
 function safeSend(socket, data) {
@@ -24,64 +37,316 @@ function broadcast(data, exceptUserId = null) {
   }
 }
 
-function sendError(ctx, error) {
-  logger.warn(ctx.addr, 'REJECTED', error);
-  safeSend(ctx.socket, build(TYPES.ERROR, { error }));
+/** Envía a los miembros conectados de un canal. Devuelve cuántos lo recibieron. */
+function sendToChannel(channel, data, exceptUserId = null) {
+  let n = 0;
+  for (const userId of state.channelMembers(channel)) {
+    if (userId === exceptUserId) continue;
+    const c = state.clients.get(userId);
+    if (c) { safeSend(c.socket, data); n++; }
+  }
+  return n;
 }
 
-// ---------- A. Sesión ----------
-function onAuthRegister(ctx, body) {
-  if (ctx.userId) return sendError(ctx, 'Ya estás autenticado');
+function sendError(ctx, error, refType = null) {
+  logger.warn(ctx.username || ctx.addr, 'REJECTED', error);
+  safeSend(ctx.socket, build(TYPES.ERROR, { error, refType }));
+}
+
+function broadcastChannelList() {
+  broadcast(build(TYPES.CHANNEL_LIST, { channels: state.channelList() }));
+}
+
+/** Normaliza el nombre de canal: quita '#' y espacios. */
+function cleanChannelName(raw) {
+  return raw.trim().replace(/^#/, '');
+}
+
+/** Convierte una fila de messages a la forma que viaja en el protocolo. */
+function toWire(row, senderName) {
+  return {
+    id: row.id,
+    from: { userId: row.sender_id, username: senderName ?? row.sender_name },
+    targetType: row.target_type,
+    targetId: row.target_id,
+    content: row.content,
+    msgType: row.msg_type,
+    timestamp: row.timestamp,
+  };
+}
+
+// ======================================================================
+// A. Sesión
+// ======================================================================
+
+/**
+ * AUTH_REGISTER: si el username no existe lo REGISTRA; si existe hace LOGIN
+ * verificando la contraseña. Es async porque scrypt corre en el thread pool.
+ */
+async function onAuthRegister(ctx, body) {
+  if (ctx.userId) return sendError(ctx, 'Ya estás autenticado', TYPES.AUTH_REGISTER);
+  if (ctx.authPending) return sendError(ctx, 'Autenticación en curso', TYPES.AUTH_REGISTER);
 
   const username = body.username.trim();
-  if (!/^[\w.\-áéíóúñÁÉÍÓÚÑ]{2,20}$/.test(username)) {
-    return sendError(ctx, 'Username inválido (2-20 caracteres alfanuméricos)');
+  const { password } = body;
+  if (!USERNAME_RE.test(username)) {
+    return sendError(ctx, 'Username inválido (2-20 caracteres: letras, números, . _ -)', TYPES.AUTH_REGISTER);
   }
-  if (state.findByUsername(username)) {
-    return sendError(ctx, `El usuario '${username}' ya está conectado`);
+  if (password.length < MIN_PASSWORD) {
+    return sendError(ctx, `La contraseña debe tener al menos ${MIN_PASSWORD} caracteres`, TYPES.AUTH_REGISTER);
   }
 
-  const userId = 'user_' + randomUUID().slice(0, 8);
-  ctx.userId = userId;
-  state.addClient(userId, {
+  ctx.authPending = true;
+  let user, isNew = false;
+  try {
+    user = storage.getUserByName(username);
+    if (user) {
+      if (!(await verifyPassword(password, user.password_hash))) {
+        logger.warn(ctx.addr, 'AUTH_FAIL', `Contraseña incorrecta para '${username}'.`);
+        return sendError(ctx, 'Usuario o contraseña incorrectos', TYPES.AUTH_REGISTER);
+      }
+    } else {
+      const passwordHash = await hashPassword(password);
+      // Re-chequeo: otro socket pudo registrar el mismo nombre durante el await
+      if (storage.getUserByName(username)) {
+        return sendError(ctx, 'Ese usuario acaba de ser registrado, probá de nuevo', TYPES.AUTH_REGISTER);
+      }
+      user = storage.createUser({ username, passwordHash });
+      isNew = true;
+    }
+  } finally {
+    ctx.authPending = false;
+  }
+
+  // El socket pudo cerrarse mientras se calculaba el hash
+  if (ctx.socket.readyState !== ctx.socket.OPEN) return;
+  if (state.isOnline(user.id)) {
+    return sendError(ctx, `El usuario '${user.username}' ya tiene una sesión abierta`, TYPES.AUTH_REGISTER);
+  }
+
+  // Perfil opcional enviado en el registro/login
+  const status = typeof body.status === 'string' ? body.status.slice(0, 30) : 'Online';
+  const avatar = typeof body.avatar === 'string' && body.avatar.startsWith('data:image/') ? body.avatar : null;
+  storage.updateProfile(user.id, { status, avatar });
+  storage.touchUser(user.id);
+
+  ctx.userId = user.id;
+  ctx.username = user.username;
+  state.addClient(user.id, {
     socket: ctx.socket,
-    username,
-    status: typeof body.status === 'string' ? body.status : 'Online',
-    avatar: typeof body.avatar === 'string' ? body.avatar : null,
+    username: user.username,
+    status,
+    avatar: avatar ?? user.avatar,
     ip: ctx.ip,
     port: ctx.port,
   });
 
-  logger.info(ctx.addr, 'AUTH', `Usuario '${username}' autenticado exitosamente (${userId}).`);
+  logger.info(ctx.addr, 'AUTH',
+    `Usuario '${user.username}' ${isNew ? 'registrado' : 'autenticado'} exitosamente (${user.id}).`);
 
-  // Respuesta al propio cliente con su id + estado global
+  // Auto-join a #General
+  state.joinChannel(DEFAULT_CHANNEL, user.id);
+  logger.action(user.username, 'JOIN_CHANNEL', `Unido automáticamente a canal '#${DEFAULT_CHANNEL}'.`);
+
+  // Respuesta al propio cliente
   safeSend(ctx.socket, build(TYPES.AUTH_OK, {
-    userId, username,
+    userId: user.id,
+    username: user.username,
+    isNew,
+    joined: [DEFAULT_CHANNEL],
     users: state.publicUsers(),
     channels: state.channelList(),
   }));
 
-  // Notificación de presencia al resto
-  const c = state.clients.get(userId);
+  // Presencia al resto
+  const c = state.clients.get(user.id);
   broadcast(build(TYPES.USER_PRESENCE, {
-    userId, username, status: c.status, avatar: c.avatar, event: 'CONNECTED',
-  }), userId);
+    userId: user.id, username: user.username, status: c.status, avatar: c.avatar,
+    online: true, event: 'CONNECTED',
+  }), user.id);
+
+  sendToChannel(DEFAULT_CHANNEL, build(TYPES.CHANNEL_EVENT, {
+    channel: DEFAULT_CHANNEL, userId: user.id, username: user.username, event: 'JOINED',
+  }), user.id);
+  broadcastChannelList();
+
+  deliverPending(ctx);
+}
+
+/** Entrega los PRIVATE_MSG que llegaron mientras el usuario estaba offline. */
+function deliverPending(ctx) {
+  const pending = storage.getPendingFor(ctx.userId);
+  if (!pending.length) return;
+
+  for (const row of pending) {
+    safeSend(ctx.socket, build(TYPES.PRIVATE_MSG, { ...toWire(row), offline: true }));
+  }
+  storage.markDelivered(pending.map((r) => r.id));
+  logger.action(ctx.username, 'DELIVER_PENDING', `${pending.length} mensaje(s) privado(s) entregado(s) al reconectar.`);
 }
 
 function onDisconnect(ctx) {
   if (!ctx.userId) return;
   const c = state.clients.get(ctx.userId);
-  state.removeClient(ctx.userId);
-  if (c) {
-    broadcast(build(TYPES.USER_PRESENCE, {
-      userId: ctx.userId, username: c.username, status: 'Offline', event: 'DISCONNECTED',
+  const leftChannels = state.removeClient(ctx.userId);
+  storage.touchUser(ctx.userId);
+  if (!c) return;
+
+  for (const channel of leftChannels) {
+    sendToChannel(channel, build(TYPES.CHANNEL_EVENT, {
+      channel, userId: ctx.userId, username: c.username, event: 'LEFT',
     }));
   }
+  broadcast(build(TYPES.USER_PRESENCE, {
+    userId: ctx.userId, username: c.username, status: 'Offline', online: false, event: 'DISCONNECTED',
+  }));
+  broadcastChannelList();
 }
 
-// ---------- Router ----------
+// ======================================================================
+// B. Canales y mensajería
+// ======================================================================
+
+function onJoinChannel(ctx, body) {
+  const requested = cleanChannelName(body.channel);
+  if (!CHANNEL_RE.test(requested)) {
+    return sendError(ctx, 'Nombre de canal inválido (2-24 caracteres: letras, números, _ -)', TYPES.JOIN_CHANNEL);
+  }
+
+  let channel = state.resolveChannel(requested);
+  let created = false;
+  if (!channel) {
+    channel = storage.createChannel(requested, ctx.userId);
+    state.createChannel(channel);
+    created = true;
+    logger.action(ctx.username, 'CREATE_CHANNEL', `Canal '#${channel}' creado.`);
+  }
+  if (state.isMember(channel, ctx.userId)) {
+    return sendError(ctx, `Ya sos miembro de '#${channel}'`, TYPES.JOIN_CHANNEL);
+  }
+
+  state.joinChannel(channel, ctx.userId);
+  logger.action(ctx.username, 'JOIN_CHANNEL', `Unido a canal '#${channel}'.`);
+
+  safeSend(ctx.socket, build(TYPES.JOIN_CHANNEL, { channel, created, ok: true }));
+  sendToChannel(channel, build(TYPES.CHANNEL_EVENT, {
+    channel, userId: ctx.userId, username: ctx.username, event: 'JOINED',
+  }), ctx.userId);
+  broadcastChannelList();
+}
+
+function onLeaveChannel(ctx, body) {
+  const channel = state.resolveChannel(cleanChannelName(body.channel));
+  if (!channel || !state.leaveChannel(channel, ctx.userId)) {
+    return sendError(ctx, `No sos miembro de '#${body.channel}'`, TYPES.LEAVE_CHANNEL);
+  }
+  logger.action(ctx.username, 'LEAVE_CHANNEL', `Salió del canal '#${channel}'.`);
+
+  safeSend(ctx.socket, build(TYPES.LEAVE_CHANNEL, { channel, ok: true }));
+  sendToChannel(channel, build(TYPES.CHANNEL_EVENT, {
+    channel, userId: ctx.userId, username: ctx.username, event: 'LEFT',
+  }));
+  broadcastChannelList();
+}
+
+function validateContent(ctx, content, refType) {
+  const text = content.trim();
+  if (!text) { sendError(ctx, 'Mensaje vacío', refType); return null; }
+  if (text.length > MAX_CONTENT) { sendError(ctx, `Mensaje demasiado largo (máx ${MAX_CONTENT})`, refType); return null; }
+  return text;
+}
+
+/**
+ * CHANNEL_MSG (Pub/Sub): channels[canal] -> userIds -> clients[userId].socket
+ * El emisor también lo recibe (confirmación con id y timestamp del servidor).
+ */
+function onChannelMsg(ctx, body) {
+  const channel = state.resolveChannel(cleanChannelName(body.channel));
+  if (!channel) return sendError(ctx, `El canal '#${body.channel}' no existe`, TYPES.CHANNEL_MSG);
+  if (!state.isMember(channel, ctx.userId)) {
+    return sendError(ctx, `Debés unirte a '#${channel}' antes de escribir`, TYPES.CHANNEL_MSG);
+  }
+  const content = validateContent(ctx, body.content, TYPES.CHANNEL_MSG);
+  if (content === null) return;
+
+  const row = storage.saveMessage({
+    senderId: ctx.userId, targetType: 'CHANNEL', targetId: channel, content,
+  });
+  const n = sendToChannel(channel, build(TYPES.CHANNEL_MSG, { ...toWire(row, ctx.username), channel }));
+  logger.action(ctx.username, 'CHANNEL_MSG', `'#${channel}' -> ${n} destinatario(s) (${content.length} caracteres).`);
+}
+
+/**
+ * PRIVATE_MSG (Unicast): busca el socket del destinatario.
+ *  - Conectado    -> entrega inmediata (delivered = 1).
+ *  - Desconectado -> queda en SQLite con delivered = 0 hasta que se conecte.
+ */
+function onPrivateMsg(ctx, body) {
+  const target = storage.getUserByName(body.to.trim());
+  if (!target) return sendError(ctx, `El usuario '${body.to}' no existe`, TYPES.PRIVATE_MSG);
+  if (target.id === ctx.userId) return sendError(ctx, 'No podés enviarte mensajes a vos mismo', TYPES.PRIVATE_MSG);
+
+  const content = validateContent(ctx, body.content, TYPES.PRIVATE_MSG);
+  if (content === null) return;
+
+  const targetClient = state.clients.get(target.id);
+  const delivered = Boolean(targetClient);
+  const row = storage.saveMessage({
+    senderId: ctx.userId, targetType: 'PRIVATE', targetId: target.id, content, delivered,
+  });
+
+  const wire = { ...toWire(row, ctx.username), to: { userId: target.id, username: target.username } };
+  if (targetClient) safeSend(targetClient.socket, build(TYPES.PRIVATE_MSG, wire));
+  // Copia al emisor con el estado de entrega
+  safeSend(ctx.socket, build(TYPES.PRIVATE_MSG, { ...wire, delivered }));
+
+  logger.action(`${ctx.username} -> ${target.username}`, 'PRIVATE_MSG',
+    delivered ? 'Entregado.' : 'Destinatario offline: guardado como pendiente.');
+}
+
+// ======================================================================
+// D. Historial
+// ======================================================================
+
+function onFetchHistory(ctx, body) {
+  const targetType = body.targetType.toUpperCase();
+  const limit = Number.isInteger(body.limit) ? body.limit : 50;
+  let targetId, label;
+
+  if (targetType === 'CHANNEL') {
+    targetId = state.resolveChannel(cleanChannelName(body.targetId));
+    if (!targetId) return sendError(ctx, `El canal '#${body.targetId}' no existe`, TYPES.FETCH_HISTORY);
+    label = `#${targetId}`;
+  } else if (targetType === 'PRIVATE') {
+    // Solo se puede pedir el historial de conversaciones propias
+    const other = storage.getUserByName(body.targetId.trim());
+    if (!other) return sendError(ctx, `El usuario '${body.targetId}' no existe`, TYPES.FETCH_HISTORY);
+    targetId = other.id;
+    label = other.username;
+  } else {
+    return sendError(ctx, 'targetType debe ser CHANNEL o PRIVATE', TYPES.FETCH_HISTORY);
+  }
+
+  const rows = storage.getHistory(targetType, targetId, { requesterId: ctx.userId, limit });
+  safeSend(ctx.socket, build(TYPES.HISTORY_RESPONSE, {
+    targetType,
+    targetId: targetType === 'CHANNEL' ? targetId : label,
+    messages: rows.map((r) => toWire(r)),
+  }));
+  logger.action(ctx.username, 'FETCH_HISTORY', `${label}: ${rows.length} mensaje(s).`);
+}
+
+// ======================================================================
+// Router
+// ======================================================================
+
 const routes = {
   [TYPES.AUTH_REGISTER]: onAuthRegister,
+  [TYPES.JOIN_CHANNEL]: onJoinChannel,
+  [TYPES.LEAVE_CHANNEL]: onLeaveChannel,
+  [TYPES.CHANNEL_MSG]: onChannelMsg,
+  [TYPES.PRIVATE_MSG]: onPrivateMsg,
+  [TYPES.FETCH_HISTORY]: onFetchHistory,
 };
 
 function dispatch(ctx, pdu) {
@@ -90,12 +355,18 @@ function dispatch(ctx, pdu) {
   // Todo excepto AUTH_REGISTER requiere sesión
   if (type !== TYPES.AUTH_REGISTER && !ctx.userId) {
     logger.warn(ctx.addr, 'UNAUTHORIZED', `Intento de ${type} sin autenticar.`);
-    return sendError(ctx, 'Debes autenticarte primero (AUTH_REGISTER)');
+    return sendError(ctx, 'Debes autenticarte primero (AUTH_REGISTER)', type);
   }
 
   const handler = routes[type];
-  if (!handler) return sendError(ctx, `Primitiva ${type} aún no implementada`);
-  handler(ctx, pdu.body, pdu);
+  if (!handler) return sendError(ctx, `Primitiva ${type} aún no implementada`, type);
+
+  // Los handlers async devuelven una Promise: capturamos su rechazo para que
+  // un error no quede como "unhandled rejection" y tire el proceso.
+  const result = handler(ctx, pdu.body, pdu);
+  if (result instanceof Promise) {
+    result.catch((err) => logger.error(ctx.addr, 'HANDLER', err.stack || err.message));
+  }
 }
 
 module.exports = { dispatch, onDisconnect, safeSend, broadcast };

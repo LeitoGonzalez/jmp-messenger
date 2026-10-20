@@ -17,6 +17,7 @@ const TYPES = Object.freeze({
   JOIN_CHANNEL: 'JOIN_CHANNEL',
   LEAVE_CHANNEL: 'LEAVE_CHANNEL',
   CHANNEL_LIST: 'CHANNEL_LIST',
+  CHANNEL_EVENT: 'CHANNEL_EVENT',   // aviso a miembros: alguien entró/salió
   CHANNEL_MSG: 'CHANNEL_MSG',
   PRIVATE_MSG: 'PRIVATE_MSG',
   // C. Archivos
@@ -34,14 +35,14 @@ const TYPES = Object.freeze({
  * Cada entrada: campo -> tipo JS esperado.
  */
 const SCHEMAS = {
-  AUTH_REGISTER:  { username: 'string' },
+  AUTH_REGISTER:  { username: 'string', password: 'string' },
   PROFILE_UPDATE: {},
   JOIN_CHANNEL:   { channel: 'string' },
   LEAVE_CHANNEL:  { channel: 'string' },
   CHANNEL_MSG:    { channel: 'string', content: 'string' },
-  PRIVATE_MSG:    { to: 'string', content: 'string' },
+  PRIVATE_MSG:    { to: 'string', content: 'string' },          // to = username destino
   FILE_OFFER:     { to: 'string', fileName: 'string', size: 'number', mime: 'string', url: 'string' },
-  FETCH_HISTORY:  { targetType: 'string', targetId: 'string' },
+  FETCH_HISTORY:  { targetType: 'string', targetId: 'string' }, // CHANNEL + nombre | PRIVATE + username
 };
 
 const MAX_PDU_BYTES = 2 * 1024 * 1024; // 2 MB (avatar Base64 incluido)

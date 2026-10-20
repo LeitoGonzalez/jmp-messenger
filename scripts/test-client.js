@@ -1,6 +1,6 @@
 /**
  * Cliente de prueba por consola (para testear el servidor sin front).
- * Uso: node scripts/test-client.js <username>
+ * Uso: node scripts/test-client.js <username> [password]
  * Comandos: escribir JSON crudo, o atajos:
  *   /bad          -> envía JSON malformado (prueba de validación)
  *   /raw {...}    -> envía el texto tal cual
@@ -11,6 +11,7 @@ const readline = require('readline');
 const { randomUUID } = require('crypto');
 
 const username = process.argv[2] || 'Tester';
+const password = process.argv[3] || '1234';
 const ws = new WebSocket(process.env.WS_URL || 'ws://localhost:3000');
 
 const pdu = (type, body) => JSON.stringify({
@@ -19,7 +20,7 @@ const pdu = (type, body) => JSON.stringify({
 
 ws.on('open', () => {
   console.log(`[conectado] autenticando como ${username}...`);
-  ws.send(pdu('AUTH_REGISTER', { username, status: 'Online' }));
+  ws.send(pdu('AUTH_REGISTER', { username, password, status: 'Online' }));
 });
 ws.on('message', (d) => console.log('<<', d.toString()));
 ws.on('close', (c) => { console.log('[cerrado]', c); process.exit(0); });

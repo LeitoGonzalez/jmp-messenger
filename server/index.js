@@ -13,6 +13,7 @@ const logger = require('./logger');
 const { parse, build, TYPES } = require('./protocol');
 const state = require('./state');
 const handlers = require('./handlers');
+const storage = require('./storage');
 
 const PORT = process.env.PORT || 3000;
 const HEARTBEAT_MS = 30_000;   // ping cada 30 s
@@ -97,6 +98,10 @@ server.listen(PORT, () => {
 process.on('SIGINT', () => {
   logger.info(`0.0.0.0:${PORT}`, 'SHUTDOWN', 'Apagando servidor...');
   for (const s of wss.clients) s.close(1001, 'Server shutdown');
-  server.close(() => process.exit(0));
+  server.close(() => { storage.close(); process.exit(0); });
   setTimeout(() => process.exit(0), 1000);
 });
+
+// Última red de seguridad: registrar en vez de morir sin rastro
+process.on('uncaughtException', (err) => logger.error('-', 'UNCAUGHT', err.stack || err.message));
+process.on('unhandledRejection', (err) => logger.error('-', 'UNHANDLED', err?.stack || String(err)));
