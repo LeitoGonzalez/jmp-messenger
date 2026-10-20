@@ -1,4 +1,4 @@
-# 💬 Chat Cliente/Servidor — Protocolo JMP sobre WebSockets
+#  Chat Cliente/Servidor — Protocolo JMP sobre WebSockets
 
 > **Proyecto grupal** desarrollado para la materia **Redes de Información** — UTN Facultad Regional Mendoza, 2026.
 >
@@ -13,7 +13,7 @@ Aplicación de mensajería instantánea con arquitectura **Cliente/Servidor en e
 
 ---
 
-## 🚀 Funcionalidades y Estado de Cumplimiento
+##  Funcionalidades y Estado de Cumplimiento
 
 | Requisito de la cátedra | Implementación Técnica | Estado |
 |---|---|---|
@@ -29,7 +29,7 @@ Aplicación de mensajería instantánea con arquitectura **Cliente/Servidor en e
 
 ---
 
-## 📐 Arquitectura
+##  Arquitectura
 
 ```text
   [Cliente A] <----+
@@ -64,7 +64,7 @@ Toda PDU (*Protocol Data Unit*) es un objeto JSON codificado en UTF-8:
 
 ---
 
-## 🛠️ Cómo correrlo
+##  Cómo correrlo
 
 Requisitos: **Node.js 20+**
 
@@ -93,7 +93,7 @@ npm test                              # Suite de 17 tests automatizados (Etapa 2
 
 ---
 
-## 📂 Estructura del Proyecto
+##  Estructura del Proyecto
 
 ```text
 chat-proy/
@@ -120,7 +120,7 @@ chat-proy/
 
 ---
 
-## 📚 Documentación
+##  Documentación
 
 * 📄 [Etapa 1 — Servidor Base, Protocolo JMP, Logging y Heartbeat](docs/etapa-1-servidor-base.md)
 * 📄 [Etapa 2 — Canales, Mensajes Privados, Persistencia SQLite y Autenticación](docs/etapa-2-canales-privados.md)
