@@ -1,6 +1,6 @@
 /**
  * ===================================================================
- * JMP MESSENGER — CLIENTE JAVASCRIPT ES6+ (VANILLA)
+ * JMP CHAT — CLIENTE JAVASCRIPT ES6+ (VANILLA)
  * Redes de Información — UTN FRM (2026)
  * ===================================================================
  */
@@ -8,20 +8,23 @@
 (() => {
   'use strict';
 
+  const STORAGE_KEY = 'jmp_chat_session';
+
   // ---------- ESTADO DE LA APLICACIÓN ----------
   const state = {
-    currentUser: null,           // { userId, username, status, avatar }
+    currentUser: null,           // { userId, username, status, avatar, password }
     currentTarget: {             // Canal o chat privado actualmente abierto
       type: 'CHANNEL',           // 'CHANNEL' | 'PRIVATE'
       id: 'General',             // nombre de canal o username del destinatario
       title: '#General',
-      status: 'Canal público',
+      subtitle: 'Canal público principal',
       avatar: null,
       online: true,
     },
     channels: [],                // [{ name, members }]
     users: [],                   // [{ userId, username, status, avatar, online, lastSeen }]
     historyCache: new Map(),     // "CHANNEL:General" -> [mensajes]
+    unreadCounts: new Map(),     // "CHANNEL:Redes" -> 2 | "PRIVATE:Carlos" -> 1
     ws: null,
     reconnectTimer: null,
   };
@@ -65,7 +68,10 @@
     chatTargetAvatar: document.getElementById('chat-target-avatar'),
     chatTargetPlaceholder: document.getElementById('chat-target-placeholder'),
     chatTargetBadge: document.getElementById('chat-target-badge'),
+    btnChatOptions: document.getElementById('btn-chat-options'),
+    chatOptionsMenu: document.getElementById('chat-options-menu'),
     btnExportChat: document.getElementById('btn-export-chat'),
+    btnClearChat: document.getElementById('btn-clear-chat'),
     messagesContainer: document.getElementById('messages-container'),
     inputMessage: document.getElementById('input-message'),
     btnSend: document.getElementById('btn-send'),
@@ -127,16 +133,19 @@
       state.ws.send(buildPdu(type, body));
       return true;
     }
-    console.warn('[JMP] No se pudo enviar paquete. Socket cerrado:', type);
+    console.warn('[JMP] Socket no abierto para enviar:', type);
     return false;
   }
 
   // ===================================================================
-  // CONEXIÓN WEBSOCKET Y RECONEXIÓN
+  // CONEXIÓN WEBSOCKET Y AUTO-RECONEXIÓN
   // ===================================================================
 
   function connectWebSocket(onOpenCallback) {
     if (state.ws && (state.ws.readyState === WebSocket.OPEN || state.ws.readyState === WebSocket.CONNECTING)) {
+      if (state.ws.readyState === WebSocket.OPEN && onOpenCallback) {
+        onOpenCallback();
+      }
       return;
     }
 
@@ -146,7 +155,7 @@
     state.ws = new WebSocket(wsUrl);
 
     state.ws.onopen = () => {
-      console.log('[WS] Conexión establecida con el servidor broker.');
+      console.log('[WS] Conexión abierta con el broker.');
       if (onOpenCallback) onOpenCallback();
     };
 
@@ -160,14 +169,13 @@
     };
 
     state.ws.onclose = (event) => {
-      console.warn('[WS] Conexión cerrada (code:', event.code, '). Reconectando en 3s...');
+      console.warn('[WS] Socket cerrado (code:', event.code, '). Intentando reconexión en 3s...');
       if (state.currentUser) {
-        showSystemMessage('⚠️ Conexión perdida con el servidor. Reconectando...');
+        showSystemMessage('Aviso: Conexión interrumpida con el broker. Reconectando...');
       }
       clearTimeout(state.reconnectTimer);
       state.reconnectTimer = setTimeout(() => {
         connectWebSocket(() => {
-          // Re-autenticar automáticamente con las credenciales activas
           if (state.currentUser && state.currentUser.password) {
             sendPdu('AUTH_REGISTER', {
               username: state.currentUser.username,
@@ -180,7 +188,7 @@
     };
 
     state.ws.onerror = (err) => {
-      console.error('[WS] Error en socket de transporte:', err);
+      console.error('[WS] Error en socket:', err);
     };
   }
 
@@ -246,18 +254,29 @@
     dom.authModal.classList.add('hidden');
     dom.appLayout.classList.remove('hidden');
 
+    const password = dom.authPassword.value || (JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}').password);
+
     state.currentUser = {
       userId: body.userId,
       username: body.username,
       status: 'Online',
       avatar: null,
-      password: dom.authPassword.value, // almacenada en memoria para auto-reconexión
+      password,
     };
 
-    // Actualizar perfil propio en la UI
+    // Guardar sesión persistente para recargas y multi-pestaña
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      username: body.username,
+      password,
+    }));
+
+    // Solicitar permiso de notificaciones del navegador
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+
     renderMyProfile();
 
-    // Actualizar listas
     if (body.channels) {
       state.channels = body.channels;
       renderChannelsList();
@@ -267,20 +286,18 @@
       renderUsersList();
     }
 
-    // Unirse a #General por defecto
+    // Seleccionar #General por defecto
     selectConversation('CHANNEL', 'General', '#General', 'Canal público principal');
   }
 
   function onUserPresence(body) {
     if (body.userId === state.currentUser?.userId) {
-      // Actualización de mi propio perfil propagada
       if (body.status) state.currentUser.status = body.status;
       if (body.avatar) state.currentUser.avatar = body.avatar;
       renderMyProfile();
       return;
     }
 
-    // Buscar o agregar usuario a la lista local
     const existingIndex = state.users.findIndex((u) => u.userId === body.userId);
     const updatedUser = {
       userId: body.userId,
@@ -298,7 +315,6 @@
 
     renderUsersList();
 
-    // Si tenemos abierto el chat privado con este usuario, actualizar header
     if (state.currentTarget.type === 'PRIVATE' && state.currentTarget.id === body.username) {
       state.currentTarget.status = updatedUser.online ? (updatedUser.status || 'En línea') : 'Desconectado';
       state.currentTarget.avatar = updatedUser.avatar;
@@ -328,50 +344,67 @@
     const key = `CHANNEL:${body.channel}`;
     appendMessageToCache(key, body);
 
-    if (state.currentTarget.type === 'CHANNEL' && state.currentTarget.id === body.channel) {
+    const isCurrentActive = state.currentTarget.type === 'CHANNEL' && state.currentTarget.id === body.channel;
+    if (isCurrentActive) {
       renderSingleMessage(body);
       scrollToBottom();
+    } else {
+      // Incrementar contador de no leídos
+      incrementUnread(key);
+      notifyBackground(`Nuevo mensaje en #${body.channel}`, `${body.from.username}: ${body.content}`);
     }
   }
 
   function onPrivateMsg(body) {
-    // Si viene de alguien, la clave es ese usuario. Si es copia de mi envío, la clave es 'to'
-    const otherUser = body.from.username === state.currentUser.username
-      ? body.to.username
-      : body.from.username;
-
+    const isMine = body.from.username === state.currentUser.username;
+    const otherUser = isMine ? body.to.username : body.from.username;
     const key = `PRIVATE:${otherUser}`;
+
     appendMessageToCache(key, body);
 
-    if (state.currentTarget.type === 'PRIVATE' && state.currentTarget.id === otherUser) {
+    const isCurrentActive = state.currentTarget.type === 'PRIVATE' && state.currentTarget.id === otherUser;
+    if (isCurrentActive) {
       renderSingleMessage(body);
       scrollToBottom();
+    } else if (!isMine) {
+      incrementUnread(key);
+      notifyBackground(`Mensaje de ${body.from.username}`, body.content);
     }
   }
 
   function onFileOffer(body) {
     const isChannel = body.targetType === 'CHANNEL';
-    const key = isChannel ? `CHANNEL:${body.targetId}` : `PRIVATE:${body.from.username === state.currentUser.username ? body.to?.username : body.from.username}`;
-    
+    const otherUser = body.from.username === state.currentUser.username ? body.to?.username : body.from.username;
+    const key = isChannel ? `CHANNEL:${body.targetId}` : `PRIVATE:${otherUser}`;
+
     appendMessageToCache(key, body);
 
-    if ((isChannel && state.currentTarget.type === 'CHANNEL' && state.currentTarget.id === body.targetId) ||
-        (!isChannel && state.currentTarget.type === 'PRIVATE' && (state.currentTarget.id === body.from.username || body.from.username === state.currentUser.username))) {
+    const isCurrentActive = (isChannel && state.currentTarget.type === 'CHANNEL' && state.currentTarget.id === body.targetId) ||
+      (!isChannel && state.currentTarget.type === 'PRIVATE' && state.currentTarget.id === otherUser);
+
+    if (isCurrentActive) {
       renderSingleMessage(body);
       scrollToBottom();
+    } else if (body.from.username !== state.currentUser.username) {
+      incrementUnread(key);
+      notifyBackground(`Archivo de ${body.from.username}`, `Envió: ${body.fileName || 'un archivo adjunto'}`);
     }
   }
 
   function onHistoryResponse(body) {
     const key = `${body.targetType}:${body.targetId}`;
-    state.historyCache.set(key, body.messages || []);
+    const messages = body.messages || [];
+
+    // Garantizar ordenamiento cronológico ascendente estricto
+    messages.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    state.historyCache.set(key, messages);
 
     if (state.currentTarget.type === body.targetType && state.currentTarget.id === body.targetId) {
       dom.messagesContainer.innerHTML = '';
-      if (!body.messages || body.messages.length === 0) {
+      if (messages.length === 0) {
         showSystemMessage('No hay mensajes previos en esta conversación.');
       } else {
-        body.messages.forEach(renderSingleMessage);
+        messages.forEach(renderSingleMessage);
       }
       scrollToBottom();
     }
@@ -391,10 +424,45 @@
     console.warn('[JMP ERROR]', msg);
 
     if (dom.authModal.classList.contains('hidden')) {
-      alert(`⚠️ ${msg}`);
+      alert(`Aviso: ${msg}`);
     } else {
+      // Si falló el auto-login guardado, limpiar storage
+      localStorage.removeItem(STORAGE_KEY);
+      dom.authSubmitBtn.querySelector('.btn-text').textContent = 'Continuar';
       dom.authError.textContent = msg;
       dom.authError.classList.remove('hidden');
+    }
+  }
+
+  // ===================================================================
+  // NOTIFICACIONES Y CONTADORES DE NO LEÍDOS
+  // ===================================================================
+
+  function incrementUnread(key) {
+    const current = state.unreadCounts.get(key) || 0;
+    state.unreadCounts.set(key, current + 1);
+    renderChannelsList();
+    renderUsersList();
+  }
+
+  function clearUnread(key) {
+    if (state.unreadCounts.has(key)) {
+      state.unreadCounts.delete(key);
+      renderChannelsList();
+      renderUsersList();
+    }
+  }
+
+  function notifyBackground(title, body) {
+    if ('Notification' in window && Notification.permission === 'granted' && document.hidden) {
+      try {
+        new Notification(title, {
+          body,
+          icon: '/favicon.ico',
+        });
+      } catch (e) {
+        // Ignorar excepciones de políticas en móviles
+      }
     }
   }
 
@@ -420,12 +488,16 @@
   function renderChannelsList() {
     dom.channelsList.innerHTML = '';
     state.channels.forEach((ch) => {
+      const key = `CHANNEL:${ch.name}`;
+      const unread = state.unreadCounts.get(key) || 0;
+      const isActive = state.currentTarget.type === 'CHANNEL' && state.currentTarget.id === ch.name;
+
       const li = document.createElement('li');
-      li.className = `item-row ${state.currentTarget.type === 'CHANNEL' && state.currentTarget.id === ch.name ? 'active' : ''}`;
+      li.className = `item-row ${isActive ? 'active' : ''}`;
       li.innerHTML = `
         <span class="channel-hash">#</span>
         <span class="item-label">${escapeHtml(ch.name)}</span>
-        <span class="item-badge-members">${ch.members}</span>
+        ${unread > 0 ? `<span class="unread-badge">${unread}</span>` : `<span class="item-badge-members">${ch.members}</span>`}
       `;
       li.onclick = () => selectConversation('CHANNEL', ch.name, `#${ch.name}`, `${ch.members} miembro(s) conectado(s)`);
       dom.channelsList.appendChild(li);
@@ -440,8 +512,11 @@
     dom.usersCount.textContent = state.users.length;
 
     filtered.forEach((u) => {
-      const li = document.createElement('li');
+      const key = `PRIVATE:${u.username}`;
+      const unread = state.unreadCounts.get(key) || 0;
       const isActive = state.currentTarget.type === 'PRIVATE' && state.currentTarget.id === u.username;
+
+      const li = document.createElement('li');
       li.className = `item-row ${isActive ? 'active' : ''}`;
 
       const avatarHtml = u.avatar
@@ -457,6 +532,7 @@
           <div class="item-label">${escapeHtml(u.username)}</div>
           <div style="font-size:11px;color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(u.status || (u.online ? 'En línea' : 'Desconectado'))}</div>
         </div>
+        ${unread > 0 ? `<span class="unread-badge">${unread}</span>` : ''}
       `;
 
       li.onclick = () => selectConversation(
@@ -473,11 +549,15 @@
 
   function selectConversation(type, id, title, subtitle, avatar = null, online = true) {
     state.currentTarget = { type, id, title, subtitle, avatar, online };
+
+    // Limpiar badge de no leídos de esta conversación
+    clearUnread(`${type}:${id}`);
+
     renderChatHeader();
     renderChannelsList();
     renderUsersList();
 
-    // Limpiar contenedor y solicitar historial indexado
+    // Limpiar contenedor de mensajes y solicitar historial indexado
     dom.messagesContainer.innerHTML = '';
     sendPdu('FETCH_HISTORY', { targetType: type, targetId: id, limit: 50 });
   }
@@ -515,16 +595,18 @@
 
     let bodyHtml = '';
 
-    // Detección de tipo de mensaje: FILE o TEXT
-    if (msg.msgType === 'FILE' || msg.fileUrl) {
-      const fileName = msg.fileName || 'archivo_adjunto';
+    // Detección robusta de archivo (por msgType, fileUrl o URL en content)
+    const isFile = msg.msgType === 'FILE' || Boolean(msg.fileUrl) || (typeof msg.content === 'string' && msg.content.startsWith('/uploads/'));
+
+    if (isFile) {
       const fileUrl = msg.fileUrl || msg.content;
-      const isImg = /\.(jpg|jpeg|png|gif|webp|svg)$/i.test(fileName) || (msg.fileData && msg.fileData.startsWith('data:image'));
+      const rawName = msg.fileName || fileUrl.split('/').pop() || 'archivo_adjunto';
+      const isImg = /\.(png|jpe?g|gif|webp|svg)$/i.test(fileUrl) || /\.(png|jpe?g|gif|webp|svg)$/i.test(rawName);
 
       if (isImg) {
         bodyHtml = `
           <div>
-            <img src="${fileUrl}" alt="${escapeHtml(fileName)}" class="image-preview-bubble" onclick="window.open('${fileUrl}', '_blank')">
+            <img src="${fileUrl}" alt="${escapeHtml(rawName)}" class="image-preview-bubble" onclick="window.open('${fileUrl}', '_blank')" title="Clic para abrir en tamaño completo">
           </div>
         `;
       } else {
@@ -533,10 +615,10 @@
           <div class="file-card-preview">
             <div class="file-icon">📄</div>
             <div class="file-card-info">
-              <div class="file-card-title">${escapeHtml(fileName)}</div>
+              <div class="file-card-title" title="${escapeHtml(rawName)}">${escapeHtml(rawName)}</div>
               <div class="file-card-size">Documento${sizeStr}</div>
             </div>
-            <a href="${fileUrl}" target="_blank" download="${escapeHtml(fileName)}" class="file-download-btn">Descargar</a>
+            <a href="${fileUrl}" target="_blank" download="${escapeHtml(rawName)}" class="file-download-btn">Descargar</a>
           </div>
         `;
       }
@@ -549,8 +631,8 @@
       : '';
 
     const statusCheck = isMine
-      ? (msg.delivered === false ? ' • <span title="Pendiente de entrega">🕒</span>' : '')
-      : (msg.offline ? ' • <span title="Entregado offline">📩</span>' : '');
+      ? (msg.delivered === false ? ' • <span title="Pendiente de entrega">Pendiente</span>' : '')
+      : (msg.offline ? ' • <span title="Entregado offline">Diferido</span>' : '');
 
     wrapper.innerHTML = `
       <div style="display:flex;flex-direction:column;${isMine ? 'align-items:flex-end;' : 'align-items:flex-start;'}">
@@ -616,7 +698,6 @@
         const ctx = canvas.getContext('2d');
         ctx.clearRect(0, 0, 200, 200);
 
-        // Escalado y recorte centrado (Cover)
         const size = Math.min(img.width, img.height);
         const x = (img.width - size) / 2;
         const y = (img.height - size) / 2;
@@ -652,7 +733,7 @@
     if (!file) return;
 
     if (file.size > 9 * 1024 * 1024) {
-      alert('⚠️ El archivo supera el límite permitido de 9 MB.');
+      alert('Aviso: El archivo supera el límite de 9 MB.');
       return;
     }
 
@@ -661,9 +742,9 @@
     const reader = new FileReader();
     reader.onload = async (e) => {
       try {
-        const fileData = e.target.result; // Data URL Base64
+        const fileData = e.target.result;
 
-        // 1. Carga fuera de banda mediante HTTP POST /api/upload
+        // 1. Carga fuera de banda vía HTTP POST /api/upload
         const response = await fetch('/api/upload', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -678,7 +759,7 @@
           throw new Error(result.error || 'Fallo en la subida HTTP');
         }
 
-        // 2. Señalización en tiempo real vía WebSocket con la PDU FILE_OFFER
+        // 2. Señalización en tiempo real vía WebSocket con FILE_OFFER
         sendPdu('FILE_OFFER', {
           targetType: state.currentTarget.type,
           targetId: state.currentTarget.id,
@@ -689,7 +770,7 @@
 
       } catch (err) {
         console.error('[Upload]', err);
-        alert(`Error al subir el archivo: ${err.message}`);
+        alert(`Error al transferir el archivo: ${err.message}`);
       }
     };
     reader.readAsDataURL(file);
@@ -705,7 +786,7 @@
     }
 
     let output = `=======================================================\n`;
-    output += `JMP MESSENGER — REGISTRO DE CONVERSACIÓN\n`;
+    output += `JMP CHAT — REGISTRO DE CONVERSACIÓN\n`;
     output += `Destino: ${state.currentTarget.title} (${state.currentTarget.type})\n`;
     output += `Fecha de exportación: ${new Date().toLocaleString()}\n`;
     output += `Total de mensajes: ${msgs.length}\n`;
@@ -714,7 +795,7 @@
     msgs.forEach((m) => {
       const ts = new Date(m.timestamp).toLocaleTimeString();
       const sender = m.from?.username || 'Sistema';
-      const content = m.msgType === 'FILE' ? `[ARCHIVO ADJUNTO: ${m.fileName || m.content}]` : m.content;
+      const content = (m.msgType === 'FILE' || m.fileUrl) ? `[ARCHIVO ADJUNTO: ${m.fileName || m.fileUrl || m.content}]` : m.content;
       output += `[${ts}] ${sender}: ${content}\n`;
     });
 
@@ -725,6 +806,7 @@
     a.download = `chat_${state.currentTarget.id}_${Date.now()}.txt`;
     a.click();
     URL.revokeObjectURL(url);
+    dom.chatOptionsMenu.classList.add('hidden');
   }
 
   // ===================================================================
@@ -764,7 +846,7 @@
     }
   };
 
-  // Submit de Autenticación
+  // Submit de Autenticación manual
   dom.authForm.onsubmit = (e) => {
     e.preventDefault();
     dom.authError.classList.add('hidden');
@@ -802,8 +884,25 @@
     }
   };
 
-  // Exportar chat
+  // Menú de opciones (3 puntos)
+  dom.btnChatOptions.onclick = (e) => {
+    e.stopPropagation();
+    dom.chatOptionsMenu.classList.toggle('hidden');
+  };
+
+  document.addEventListener('click', (e) => {
+    if (!dom.chatOptionsMenu.contains(e.target) && e.target !== dom.btnChatOptions) {
+      dom.chatOptionsMenu.classList.add('hidden');
+    }
+  });
+
   dom.btnExportChat.onclick = exportCurrentConversation;
+
+  dom.btnClearChat.onclick = () => {
+    dom.messagesContainer.innerHTML = '';
+    showSystemMessage('Vista local de la conversación limpiada.');
+    dom.chatOptionsMenu.classList.add('hidden');
+  };
 
   // Filtrado en búsqueda rápida del sidebar
   dom.searchFilter.oninput = () => {
@@ -867,7 +966,8 @@
 
   // Logout
   dom.btnLogout.onclick = () => {
-    if (confirm('¿Deseas cerrar sesión en JMP Messenger?')) {
+    if (confirm('¿Deseas cerrar sesión en JMP Chat?')) {
+      localStorage.removeItem(STORAGE_KEY);
       if (state.ws) state.ws.close(1000);
       location.reload();
     }
@@ -876,5 +976,28 @@
   // Helpers de modales
   function openModal(modalEl) { modalEl.classList.remove('hidden'); }
   function closeModal(modalEl) { modalEl.classList.add('hidden'); }
+
+  // ===================================================================
+  // AUTO-LOGIN POR LOCALSTORAGE AL RECARGAR PÁGINA
+  // ===================================================================
+  const savedSession = localStorage.getItem(STORAGE_KEY);
+  if (savedSession) {
+    try {
+      const creds = JSON.parse(savedSession);
+      if (creds && creds.username && creds.password) {
+        dom.authUsername.value = creds.username;
+        dom.authPassword.value = creds.password;
+        dom.authSubmitBtn.querySelector('.btn-text').textContent = 'Reconectando sesión...';
+        connectWebSocket(() => {
+          sendPdu('AUTH_REGISTER', {
+            username: creds.username,
+            password: creds.password,
+          });
+        });
+      }
+    } catch (e) {
+      localStorage.removeItem(STORAGE_KEY);
+    }
+  }
 
 })();
