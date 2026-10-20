@@ -1,4 +1,4 @@
-#  Chat Cliente/Servidor — Protocolo JMP sobre WebSockets
+# 💬 Chat Cliente/Servidor — Protocolo JMP sobre WebSockets
 
 > **Proyecto grupal** desarrollado para la materia **Redes de Información** — UTN Facultad Regional Mendoza, 2026.
 >
@@ -13,7 +13,7 @@ Aplicación de mensajería instantánea con arquitectura **Cliente/Servidor en e
 
 ---
 
-##  Funcionalidades y Estado de Cumplimiento
+## 🚀 Funcionalidades y Estado de Cumplimiento
 
 | Requisito de la cátedra | Implementación Técnica | Estado |
 |---|---|---|
@@ -22,25 +22,27 @@ Aplicación de mensajería instantánea con arquitectura **Cliente/Servidor en e
 | **Protocolo de mensajería** | **JMP** propio sobre WebSocket (inspirado en XMPP) | ✅ Etapa 1 |
 | **Guardar conversaciones** | SQLite (`better-sqlite3`) + `FETCH_HISTORY` indexado | ✅ Etapa 2 |
 | **Registro de información (logging)** | Auditado en `server.log` con formato estandarizado | ✅ Etapa 1 |
-| **Perfil de usuario y foto** | `AUTH_REGISTER` / `PROFILE_UPDATE` con avatar Base64 | ⏳ Etapa 3 |
-| **Envío de archivos a un usuario** | `FILE_OFFER` + servidor de archivos HTTP (Express) | ⏳ Etapa 4 |
+| **Perfil de usuario y foto** | `AUTH_REGISTER` / `PROFILE_UPDATE` con avatar Base64 | ✅ Etapa 3 |
+| **Envío de archivos a un usuario** | `FILE_OFFER` + servidor de archivos HTTP (Express) | ✅ Etapa 4 |
 
 **Robustez de red:** Heartbeat activo Ping/Pong (30 s), manejo defensivo de `ECONNRESET`/`EPIPE`, captura de excepciones sin caídas del proceso y validación estricta del esquema de cada PDU.
 
 ---
 
-##  Arquitectura
+## 📐 Arquitectura
 
 ```text
   [Cliente A] <----+
                    |---> [Servidor Central / Broker] <---> [SQLite (chat.db)]
-  [Cliente B] <----+          |
-                              +---> [server.log]
-  [Cliente C] <---------------+
+  [Cliente B] <----+          |          |
+                              |          +---> [server/uploads/ (Archivos)]
+  [Cliente C] <---------------+          |
+                                         +---> [server.log (Auditoría)]
 ```
 
 - **Servidor:** Node.js — Event Loop asíncrono con E/S no bloqueante.
-- **Transporte:** WebSocket (`ws`) sobre TCP, mismo puerto que HTTP (Express).
+- **Transporte de Control:** WebSocket (`ws`) persistente sobre TCP.
+- **Transporte de Datos:** HTTP (Express) para subida y descarga directa de archivos binarios.
 - **Persistencia:** Base de datos relacional SQLite con transacciones ACID y modo WAL.
 - **Cliente:** Interfaz Web (HTML5, CSS3, JavaScript ES6+).
 
@@ -64,7 +66,7 @@ Toda PDU (*Protocol Data Unit*) es un objeto JSON codificado en UTF-8:
 
 ---
 
-##  Cómo correrlo
+## 🛠️ Cómo correrlo
 
 Requisitos: **Node.js 20+**
 
@@ -93,7 +95,7 @@ npm test                              # Suite de 17 tests automatizados (Etapa 2
 
 ---
 
-##  Estructura del Proyecto
+## 📂 Estructura del Proyecto
 
 ```text
 chat-proy/
@@ -101,26 +103,30 @@ chat-proy/
 ├── data/
 │   └── chat.db             ← Base de datos SQLite (auto-generada)
 ├── server/
-│   ├── index.js            ← Arranque HTTP + WebSocket + Heartbeat
+│   ├── index.js            ← Arranque HTTP + WebSocket + Heartbeat + API Upload
 │   ├── protocol.js         ← Protocolo JMP: tipos, build(), parse()
-│   ├── handlers.js         ← Lógica de primitivas (Pub/Sub, Unicast, Auth)
+│   ├── handlers.js         ← Lógica de primitivas (Pub/Sub, Unicast, Auth, Archivos)
 │   ├── state.js            ← Estado en memoria (ClientsMap y ChannelsMap)
 │   ├── storage.js          ← Motor de persistencia (SQLite Engine)
 │   ├── auth.js             ← Hash y verificación de contraseñas (scrypt)
 │   ├── logger.js           ← Logging auditado
-│   └── uploads/            ← Carpeta para archivos transferidos
+│   └── uploads/            ← Almacenamiento físico de archivos transferidos
 ├── client/                 ← Interfaz gráfica web (HTML / CSS / JS)
 ├── scripts/
 │   ├── test-client.js      ← Cliente de consola para pruebas
 │   └── test-etapa2.js      ← 17 tests automáticos end-to-end
 └── docs/
     ├── etapa-1-servidor-base.md
-    └── etapa-2-canales-privados.md
+    ├── etapa-2-canales-privados.md
+    ├── etapa-3-perfil-avatar.md
+    └── etapa-4-transferencia-archivos.md
 ```
 
 ---
 
-##  Documentación
+## 📚 Documentación Técnica por Etapas
 
 * 📄 [Etapa 1 — Servidor Base, Protocolo JMP, Logging y Heartbeat](docs/etapa-1-servidor-base.md)
 * 📄 [Etapa 2 — Canales, Mensajes Privados, Persistencia SQLite y Autenticación](docs/etapa-2-canales-privados.md)
+* 📄 [Etapa 3 — Perfil de Usuario, Estado Personalizado y Avatar en Base64](docs/etapa-3-perfil-avatar.md)
+* 📄 [Etapa 4 — Transferencia de Archivos Híbrida (HTTP + Señalización WebSockets)](docs/etapa-4-transferencia-archivos.md)

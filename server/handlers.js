@@ -5,6 +5,7 @@
  * Etapa 2: login con contraseña, JOIN/LEAVE_CHANNEL, CHANNEL_MSG (pub/sub),
  *          PRIVATE_MSG (unicast + entrega diferida), FETCH_HISTORY.
  */
+const path = require('path');
 const { build, TYPES } = require('./protocol');
 const state = require('./state');
 const storage = require('./storage');
@@ -179,10 +180,17 @@ function deliverPending(ctx) {
   if (!pending.length) return;
 
   for (const row of pending) {
-    safeSend(ctx.socket, build(TYPES.PRIVATE_MSG, { ...toWire(row), offline: true }));
+    const isFile = row.msg_type === 'FILE';
+    const type = isFile ? TYPES.FILE_OFFER : TYPES.PRIVATE_MSG;
+    safeSend(ctx.socket, build(type, {
+      ...toWire(row),
+      fileUrl: isFile ? row.content : undefined,
+      fileName: isFile ? path.basename(row.content) : undefined,
+      offline: true,
+    }));
   }
   storage.markDelivered(pending.map((r) => r.id));
-  logger.action(ctx.username, 'DELIVER_PENDING', `${pending.length} mensaje(s) privado(s) entregado(s) al reconectar.`);
+  logger.action(ctx.username, 'DELIVER_PENDING', `${pending.length} mensaje(s) / archivo(s) entregado(s) al reconectar.`);
 }
 
 function onDisconnect(ctx) {
@@ -201,6 +209,49 @@ function onDisconnect(ctx) {
     userId: ctx.userId, username: c.username, status: 'Offline', online: false, event: 'DISCONNECTED',
   }));
   broadcastChannelList();
+}
+
+function onProfileUpdate(ctx, body) {
+  if (!ctx.userId) return sendError(ctx, 'Debes autenticarte primero', TYPES.PROFILE_UPDATE);
+
+  const status = typeof body.status === 'string' && body.status.trim() ? body.status.trim().slice(0, 30) : null;
+  const avatar = typeof body.avatar === 'string' && body.avatar.startsWith('data:image/') ? body.avatar : null;
+
+  if (!status && !avatar) {
+    return sendError(ctx, 'Debe proporcionar al menos status o avatar válido', TYPES.PROFILE_UPDATE);
+  }
+
+  storage.updateProfile(ctx.userId, { status, avatar });
+
+  const client = state.clients.get(ctx.userId);
+  if (client) {
+    if (status) client.status = status;
+    if (avatar) client.avatar = avatar;
+  }
+
+  const currentStatus = client ? client.status : (status || 'Online');
+  const currentAvatar = client ? client.avatar : avatar;
+
+  // Confirmación al propio cliente
+  safeSend(ctx.socket, build(TYPES.PROFILE_UPDATE, {
+    userId: ctx.userId,
+    username: ctx.username,
+    status: currentStatus,
+    avatar: currentAvatar,
+    ok: true,
+  }));
+
+  // Notificación en broadcast con USER_PRESENCE a todos
+  broadcast(build(TYPES.USER_PRESENCE, {
+    userId: ctx.userId,
+    username: ctx.username,
+    status: currentStatus,
+    avatar: currentAvatar,
+    online: true,
+    event: 'PROFILE_UPDATED',
+  }));
+
+  logger.action(ctx.username, 'PROFILE_UPDATE', `Perfil actualizado (${status ? 'estado: "' + status + '"' : ''}${status && avatar ? ', ' : ''}${avatar ? 'avatar Base64' : ''}).`);
 }
 
 // ======================================================================
@@ -337,15 +388,95 @@ function onFetchHistory(ctx, body) {
 }
 
 // ======================================================================
+// C. Transferencia de Archivos
+// ======================================================================
+
+function onFileOffer(ctx, body) {
+  if (!ctx.userId) return sendError(ctx, 'Debes autenticarte primero', TYPES.FILE_OFFER);
+
+  const targetType = body.targetType ? body.targetType.toUpperCase() : '';
+  const { fileName, fileUrl, fileSize } = body;
+
+  if (targetType === 'CHANNEL') {
+    const channel = state.resolveChannel(cleanChannelName(body.targetId));
+    if (!channel) return sendError(ctx, `El canal '#${body.targetId}' no existe`, TYPES.FILE_OFFER);
+    if (!state.isMember(channel, ctx.userId)) {
+      return sendError(ctx, `Debes unirte a '#${channel}' antes de compartir archivos`, TYPES.FILE_OFFER);
+    }
+
+    const row = storage.saveMessage({
+      senderId: ctx.userId,
+      targetType: 'CHANNEL',
+      targetId: channel,
+      content: fileUrl,
+      msgType: 'FILE',
+    });
+
+    const wire = {
+      ...toWire(row, ctx.username),
+      targetType: 'CHANNEL',
+      targetId: channel,
+      channel,
+      fileName,
+      fileUrl,
+      fileSize,
+    };
+
+    const n = sendToChannel(channel, build(TYPES.FILE_OFFER, wire));
+    logger.transfer(ctx.username, 'FILE_OFFER', `Canal '#${channel}': archivo '${fileName}' (${(fileSize / 1024).toFixed(1)} KB) -> ${n} destinatario(s).`);
+  } else if (targetType === 'PRIVATE') {
+    const target = storage.getUserByName(body.targetId.trim());
+    if (!target) return sendError(ctx, `El usuario '${body.targetId}' no existe`, TYPES.FILE_OFFER);
+    if (target.id === ctx.userId) return sendError(ctx, 'No puedes enviarte archivos a ti mismo', TYPES.FILE_OFFER);
+
+    const targetClient = state.clients.get(target.id);
+    const delivered = Boolean(targetClient);
+
+    const row = storage.saveMessage({
+      senderId: ctx.userId,
+      targetType: 'PRIVATE',
+      targetId: target.id,
+      content: fileUrl,
+      msgType: 'FILE',
+      delivered,
+    });
+
+    const wire = {
+      ...toWire(row, ctx.username),
+      targetType: 'PRIVATE',
+      targetId: target.id,
+      to: { userId: target.id, username: target.username },
+      fileName,
+      fileUrl,
+      fileSize,
+    };
+
+    if (targetClient) {
+      safeSend(targetClient.socket, build(TYPES.FILE_OFFER, wire));
+    }
+
+    // Copia al emisor con confirmación de entrega
+    safeSend(ctx.socket, build(TYPES.FILE_OFFER, { ...wire, delivered }));
+
+    logger.transfer(`${ctx.username} -> ${target.username}`, 'FILE_OFFER',
+      `Archivo '${fileName}' (${(fileSize / 1024).toFixed(1)} KB) - ${delivered ? 'Entregado.' : 'Guardado pendiente (offline).'}`);
+  } else {
+    return sendError(ctx, 'targetType debe ser CHANNEL o PRIVATE', TYPES.FILE_OFFER);
+  }
+}
+
+// ======================================================================
 // Router
 // ======================================================================
 
 const routes = {
   [TYPES.AUTH_REGISTER]: onAuthRegister,
+  [TYPES.PROFILE_UPDATE]: onProfileUpdate,
   [TYPES.JOIN_CHANNEL]: onJoinChannel,
   [TYPES.LEAVE_CHANNEL]: onLeaveChannel,
   [TYPES.CHANNEL_MSG]: onChannelMsg,
   [TYPES.PRIVATE_MSG]: onPrivateMsg,
+  [TYPES.FILE_OFFER]: onFileOffer,
   [TYPES.FETCH_HISTORY]: onFetchHistory,
 };
 

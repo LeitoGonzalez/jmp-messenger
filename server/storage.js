@@ -116,7 +116,7 @@ function createUser({ username, passwordHash, status = 'Online', avatar = null }
 }
 
 function updateProfile(id, { status = null, avatar = null }) {
-  stmts.updateProfile.run({ id, status, avatar });
+  return stmts.updateProfile.run({ id, status: status || null, avatar: avatar || null });
 }
 
 function touchUser(id) { stmts.touchUser.run(new Date().toISOString(), id); }

@@ -15,14 +15,59 @@ const state = require('./state');
 const handlers = require('./handlers');
 const storage = require('./storage');
 
+const fs = require('fs');
+const { randomUUID } = require('crypto');
+
 const PORT = process.env.PORT || 3000;
 const HEARTBEAT_MS = 30_000;   // ping cada 30 s
 const MAX_MISSED_PINGS = 2;    // 2 pings sin pong => desconexión
 
 // ---------- HTTP ----------
 const app = express();
+const UPLOADS_DIR = path.join(__dirname, 'uploads');
+fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+
 app.use(express.static(path.join(__dirname, '..', 'client')));
+app.use('/uploads', express.static(UPLOADS_DIR));
+app.use(express.json({ limit: '10mb' }));
+
 app.get('/api/health', (_req, res) => res.json({ ok: true, clients: state.clients.size }));
+
+app.post('/api/upload', (req, res) => {
+  try {
+    const { fileName, fileData } = req.body || {};
+    if (!fileName || typeof fileName !== 'string' || !fileData || typeof fileData !== 'string') {
+      return res.status(400).json({ ok: false, error: 'Parámetros "fileName" y "fileData" requeridos' });
+    }
+
+    const matches = fileData.match(/^data:([^;]+);base64,(.+)$/);
+    const base64Content = matches ? matches[2] : fileData;
+    const buffer = Buffer.from(base64Content, 'base64');
+
+    if (buffer.length === 0) {
+      return res.status(400).json({ ok: false, error: 'El archivo está vacío o el formato Base64 es inválido' });
+    }
+
+    const ext = path.extname(fileName).slice(0, 10).replace(/[^a-zA-Z0-9.]/g, '') || '.bin';
+    const uniqueName = `${randomUUID()}${ext}`;
+    const targetPath = path.join(UPLOADS_DIR, uniqueName);
+
+    fs.writeFileSync(targetPath, buffer);
+
+    const fileUrl = `/uploads/${uniqueName}`;
+    logger.info(req.ip || 'HTTP', 'UPLOAD', `Archivo subido: '${fileName}' (${(buffer.length / 1024).toFixed(1)} KB) -> ${fileUrl}`);
+
+    res.json({
+      ok: true,
+      fileUrl,
+      fileName: path.basename(fileName).slice(0, 100),
+      fileSize: buffer.length,
+    });
+  } catch (err) {
+    logger.error('HTTP', 'UPLOAD_ERROR', err.message);
+    res.status(500).json({ ok: false, error: 'Error interno al procesar el archivo' });
+  }
+});
 
 const server = http.createServer(app);
 

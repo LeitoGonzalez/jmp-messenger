@@ -36,12 +36,21 @@ const TYPES = Object.freeze({
  */
 const SCHEMAS = {
   AUTH_REGISTER:  { username: 'string', password: 'string' },
-  PROFILE_UPDATE: {},
+  [TYPES.PROFILE_UPDATE]: {
+    status: { type: 'string', optional: true },
+    avatar: { type: 'string', optional: true },
+  },
   JOIN_CHANNEL:   { channel: 'string' },
   LEAVE_CHANNEL:  { channel: 'string' },
   CHANNEL_MSG:    { channel: 'string', content: 'string' },
   PRIVATE_MSG:    { to: 'string', content: 'string' },          // to = username destino
-  FILE_OFFER:     { to: 'string', fileName: 'string', size: 'number', mime: 'string', url: 'string' },
+  [TYPES.FILE_OFFER]: {
+    targetType: 'string', // 'CHANNEL' o 'PRIVATE'
+    targetId: 'string',   // Nombre del canal o username del destinatario
+    fileName: 'string',
+    fileUrl: 'string',
+    fileSize: 'number',
+  },
   FETCH_HISTORY:  { targetType: 'string', targetId: 'string' }, // CHANNEL + nombre | PRIVATE + username
 };
 
@@ -81,9 +90,20 @@ function parse(raw) {
   const schema = SCHEMAS[head.type];
   if (!schema) return { ok: false, error: `Tipo desconocido: ${head.type}` };
 
-  for (const [field, expected] of Object.entries(schema)) {
-    if (typeof pdu.body[field] !== expected) {
-      return { ok: false, error: `Campo "${field}" inválido (se esperaba ${expected})` };
+  for (const [field, rule] of Object.entries(schema)) {
+    const isObj = typeof rule === 'object' && rule !== null;
+    const expectedType = isObj ? rule.type : rule;
+    const isOptional = isObj && Boolean(rule.optional);
+
+    if (pdu.body[field] === undefined || pdu.body[field] === null) {
+      if (!isOptional) {
+        return { ok: false, error: `Campo "${field}" requerido` };
+      }
+      continue;
+    }
+
+    if (typeof pdu.body[field] !== expectedType) {
+      return { ok: false, error: `Campo "${field}" inválido (se esperaba ${expectedType})` };
     }
   }
   return { ok: true, pdu };
