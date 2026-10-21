@@ -1,39 +1,27 @@
-/**
- * JMP - JSON Message Protocol (Capa de Aplicación, L7).
- * Toda PDU tiene la forma:
- *   { head: { type, messageId, timestamp }, body: { ... } }
- */
+// Definición del protocolo de mensajes (JMP)
 const { randomUUID } = require('crypto');
 
-/** Catálogo de primitivas del protocolo. */
+// Tipos de mensajes que maneja el servidor
 const TYPES = Object.freeze({
-  // A. Sesión y perfil
   AUTH_REGISTER: 'AUTH_REGISTER',
   AUTH_OK: 'AUTH_OK',
   PROFILE_UPDATE: 'PROFILE_UPDATE',
   USER_PRESENCE: 'USER_PRESENCE',
   USER_LIST: 'USER_LIST',
-  // B. Canales y mensajería
   JOIN_CHANNEL: 'JOIN_CHANNEL',
   LEAVE_CHANNEL: 'LEAVE_CHANNEL',
   CHANNEL_LIST: 'CHANNEL_LIST',
-  CHANNEL_EVENT: 'CHANNEL_EVENT',   // aviso a miembros: alguien entró/salió
+  CHANNEL_EVENT: 'CHANNEL_EVENT',
   CHANNEL_MSG: 'CHANNEL_MSG',
   PRIVATE_MSG: 'PRIVATE_MSG',
-  // C. Archivos
   FILE_OFFER: 'FILE_OFFER',
   FILE_HTTP_URL: 'FILE_HTTP_URL',
-  // D. Historial
   FETCH_HISTORY: 'FETCH_HISTORY',
   HISTORY_RESPONSE: 'HISTORY_RESPONSE',
-  // Control
   ERROR: 'ERROR',
 });
 
-/**
- * Campos obligatorios del body por tipo (validación de entrada).
- * Cada entrada: campo -> tipo JS esperado.
- */
+// Campos esperados para cada tipo de mensaje
 const SCHEMAS = {
   AUTH_REGISTER:  { username: 'string', password: 'string' },
   [TYPES.PROFILE_UPDATE]: {
@@ -43,20 +31,20 @@ const SCHEMAS = {
   JOIN_CHANNEL:   { channel: 'string' },
   LEAVE_CHANNEL:  { channel: 'string' },
   CHANNEL_MSG:    { channel: 'string', content: 'string' },
-  PRIVATE_MSG:    { to: 'string', content: 'string' },          // to = username destino
+  PRIVATE_MSG:    { to: 'string', content: 'string' },
   [TYPES.FILE_OFFER]: {
-    targetType: 'string', // 'CHANNEL' o 'PRIVATE'
-    targetId: 'string',   // Nombre del canal o username del destinatario
+    targetType: 'string',
+    targetId: 'string',
     fileName: 'string',
     fileUrl: 'string',
     fileSize: 'number',
   },
-  FETCH_HISTORY:  { targetType: 'string', targetId: 'string' }, // CHANNEL + nombre | PRIVATE + username
+  FETCH_HISTORY:  { targetType: 'string', targetId: 'string' },
 };
 
-const MAX_PDU_BYTES = 2 * 1024 * 1024; // 2 MB (avatar Base64 incluido)
+const MAX_PDU_BYTES = 2 * 1024 * 1024; // Límite de 2MB por mensaje
 
-/** Construye una PDU JMP lista para enviar. */
+// Arma el mensaje en formato JSON con su cabecera y cuerpo
 function build(type, body = {}) {
   return JSON.stringify({
     head: { type, messageId: randomUUID(), timestamp: new Date().toISOString() },
@@ -64,10 +52,7 @@ function build(type, body = {}) {
   });
 }
 
-/**
- * Parsea y valida un paquete crudo recibido del socket.
- * @returns {{ ok: true, pdu } | { ok: false, error: string }}
- */
+// Parsea y valida el paquete recibido
 function parse(raw) {
   if (raw.length > MAX_PDU_BYTES) return { ok: false, error: 'PDU demasiado grande' };
 

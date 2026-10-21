@@ -1,25 +1,17 @@
-/**
- * Estado interno del servidor (en memoria).
- * Node.js ejecuta el código JS en un único hilo (event loop), por lo que
- * estas estructuras son "synchronization-safe" sin necesidad de locks:
- * ningún handler se interrumpe a mitad de una modificación.
- *
- * Memoria  = quién está conectado AHORA y en qué canales (volátil).
- * SQLite   = usuarios registrados, canales existentes y mensajes (persistente).
- */
+// Estado en memoria del servidor
 const storage = require('./storage');
 
-/** ClientsMap: userId -> { socket, username, status, avatar, ip, port } (solo conectados) */
+// Mapa de usuarios conectados actualmente
 const clients = new Map();
 
-/** ChannelsMap: channelName -> Set(userId) (miembros conectados) */
+// Canales activos y sus usuarios conectados
 const channels = new Map(storage.listChannels().map((name) => [name, new Set()]));
 
 function addClient(userId, info) {
   clients.set(userId, info);
 }
 
-/** Saca al usuario de clients y de todos los canales. Devuelve los canales que dejó. */
+// Desconecta al usuario y lo saca de los canales en los que estaba
 function removeClient(userId) {
   clients.delete(userId);
   const left = [];
@@ -33,7 +25,7 @@ function isOnline(userId) {
   return clients.has(userId);
 }
 
-/** Busca el nombre "canónico" de un canal sin distinguir mayúsculas, validando existencia en SQLite. */
+// Busca el canal en la base sin importar mayúsculas o minúsculas
 function resolveChannel(name) {
   const lower = name.toLowerCase();
   const dbChannels = storage.listChannels();
@@ -68,10 +60,7 @@ function channelMembers(channel) {
   return channels.get(channel) || new Set();
 }
 
-/**
- * Lista pública de usuarios: todos los registrados (SQLite) con su estado de
- * conexión real (memoria). Nunca expone el socket ni el hash de contraseña.
- */
+// Devuelve los usuarios registrados combinados con su estado online en memoria
 function publicUsers() {
   return storage.listUsers().map((u) => {
     const live = clients.get(u.id);
@@ -88,13 +77,13 @@ function publicUsers() {
 
 function channelList() {
   const dbChannels = new Set(storage.listChannels().map((n) => n.toLowerCase()));
-  // Purgar de memoria cualquier canal que haya sido eliminado de SQLite
+  // Limpiamos de memoria canales que ya no existen en la base
   for (const name of channels.keys()) {
     if (!dbChannels.has(name.toLowerCase())) {
       channels.delete(name);
     }
   }
-  // Asegurar que los canales de SQLite estén presentes
+  // Sincronizamos con los canales que hay en SQLite
   for (const dbName of storage.listChannels()) {
     if (!channels.has(dbName)) channels.set(dbName, new Set());
   }

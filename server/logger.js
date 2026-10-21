@@ -1,16 +1,11 @@
-/**
- * Módulo de Logging Auditado.
- * Formato: [TIMESTAMP] [NIVEL] [ORIGEN] [EVENTO] Detalle
- *   ORIGEN puede ser "IP:PUERTO", un username o "Emisor -> Receptor".
- * Escribe en consola (con colores) y en server.log (texto plano, append).
- */
+// Registro de eventos por consola y en archivo server.log
 const fs = require('fs');
 const path = require('path');
 
 const LOG_FILE = path.join(__dirname, 'server.log');
 const isNew = !fs.existsSync(LOG_FILE) || fs.statSync(LOG_FILE).size === 0;
 const stream = fs.createWriteStream(LOG_FILE, { flags: 'a', encoding: 'utf8' });
-if (isNew) stream.write('\uFEFF'); // BOM: PowerShell detecta UTF-8 y muestra bien las tildes
+if (isNew) stream.write('\uFEFF'); // BOM para que PowerShell lea bien UTF-8
 
 const COLORS = {
   INFO: '\x1b[36m',     // cian

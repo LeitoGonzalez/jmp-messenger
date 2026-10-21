@@ -1,9 +1,4 @@
-/**
- * Servidor Central / Broker del chat.
- *  - HTTP (Express): sirve el cliente web y (más adelante) /api/upload.
- *  - WebSocket (ws): canal persistente full-duplex sobre TCP con cada cliente.
- * Concurrencia: event loop asíncrono de Node.js (E/S no bloqueante).
- */
+// Servidor principal: Express para HTTP y ws para WebSockets
 const http = require('http');
 const path = require('path');
 const express = require('express');
@@ -19,17 +14,16 @@ const fs = require('fs');
 const { randomUUID } = require('crypto');
 
 const PORT = process.env.PORT || 3000;
-const HEARTBEAT_MS = 30_000;   // ping cada 30 s
-const MAX_MISSED_PINGS = 2;    // 2 pings sin pong => desconexión
+const HEARTBEAT_MS = 30_000;   // ping cada 30 segundos
+const MAX_MISSED_PINGS = 2;    // desconectar tras 2 pings sin respuesta
 
-// ---------- HTTP ----------
+// Configuración de Express
 const app = express();
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
 app.use(express.static(path.join(__dirname, '..', 'client')));
-// Solo estas extensiones pueden subirse. Las imágenes se muestran inline; el resto se fuerza a descarga
-// (evita que un .html/.svg subido se ejecute en el mismo origen que la app).
+// Extensiones permitidas para subida de archivos
 const INLINE_IMAGES = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
 const ALLOWED_EXT = new Set([
   ...INLINE_IMAGES,
@@ -45,7 +39,7 @@ app.use('/uploads', express.static(UPLOADS_DIR, {
     }
   },
 }));
-// 13 MB: un archivo de 9 MB en Base64 pesa ~12 MB
+// Límite de tamaño para el JSON (soporta base64)
 app.use(express.json({ limit: '13mb' }));
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, clients: state.clients.size }));
@@ -94,11 +88,11 @@ app.post('/api/upload', (req, res) => {
 
 const server = http.createServer(app);
 
-// ---------- WebSocket ----------
+// Servidor WebSocket
 const wss = new WebSocketServer({ server, maxPayload: 2 * 1024 * 1024 });
 
 wss.on('connection', (socket, req) => {
-  // Demultiplexación L4: cada socket queda identificado por IP:PUERTO remoto.
+  // Guardamos datos básicos de la conexión (IP y puerto)
   const ip = (req.socket.remoteAddress || '').replace('::ffff:', '');
   const port = req.socket.remotePort;
   const ctx = { socket, ip, port, addr: `${ip}:${port}`, userId: null, missedPings: 0 };
@@ -117,7 +111,7 @@ wss.on('connection', (socket, req) => {
       }
       handlers.dispatch(ctx, result.pdu);
     } catch (err) {
-      // Nunca dejamos que un paquete tire abajo el servidor.
+      // Evitamos que un error tire abajo el proceso
       logger.error(ctx.addr, 'HANDLER', err.stack || err.message);
     }
   });
@@ -133,20 +127,20 @@ wss.on('connection', (socket, req) => {
   });
 
   socket.on('error', (err) => {
-    // ECONNRESET, EPIPE, etc. (errores de la capa de transporte)
+    // Errores de socket (desconexiones abruptas, etc.)
     logger.warn(ctx.addr, 'SOCKET_ERROR', `${err.code || ''} ${err.message}`);
   });
 
   socket._ctx = ctx;
 });
 
-// ---------- Heartbeat (Ping/Pong) ----------
+// Control de conexión activa (ping / pong)
 const heartbeat = setInterval(() => {
   for (const socket of wss.clients) {
     const ctx = socket._ctx;
     if (ctx.missedPings >= MAX_MISSED_PINGS) {
       logger.warn(ctx.addr, 'TIMEOUT', `Sin respuesta a ${MAX_MISSED_PINGS} pings. Cerrando socket.`);
-      socket.terminate(); // dispara 'close' => onDisconnect => USER_PRESENCE offline
+      socket.terminate();
       continue;
     }
     ctx.missedPings++;
@@ -162,7 +156,7 @@ server.listen(PORT, () => {
   logger.info(`0.0.0.0:${PORT}`, 'START', `Servidor escuchando en http://localhost:${PORT} (HTTP + WebSocket)`);
 });
 
-// Cierre limpio con Ctrl+C
+// Cierre ordenado del servidor con SIGINT
 process.on('SIGINT', () => {
   logger.info(`0.0.0.0:${PORT}`, 'SHUTDOWN', 'Apagando servidor...');
   for (const s of wss.clients) s.close(1001, 'Server shutdown');
@@ -170,6 +164,6 @@ process.on('SIGINT', () => {
   setTimeout(() => process.exit(0), 1000);
 });
 
-// Última red de seguridad: registrar en vez de morir sin rastro
+// Registro de errores no capturados
 process.on('uncaughtException', (err) => logger.error('-', 'UNCAUGHT', err.stack || err.message));
 process.on('unhandledRejection', (err) => logger.error('-', 'UNHANDLED', err?.stack || String(err)));

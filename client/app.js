@@ -1,37 +1,32 @@
-/**
- * ===================================================================
- * JMP CHAT — CLIENTE JAVASCRIPT ES6+ (VANILLA)
- * Redes de Información — UTN FRM (2026)
- * ===================================================================
- */
+// Lógica del cliente para el chat web
 
 (() => {
   'use strict';
 
   const STORAGE_KEY = 'jmp_chat_session';
 
-  // ---------- ESTADO DE LA APLICACIÓN ----------
+  // Estado del cliente en memoria
   const state = {
-    currentUser: null,           // { userId, username, status, avatar, password }
-    currentTarget: {             // Canal o chat privado actualmente abierto
+    currentUser: null,           // datos del usuario logueado
+    currentTarget: {             // chat o canal seleccionado actualmente
       type: 'CHANNEL',           // 'CHANNEL' | 'PRIVATE'
-      id: 'General',             // nombre de canal o username del destinatario
+      id: 'General',
       title: '#General',
       subtitle: 'Canal público principal',
       avatar: null,
       online: true,
     },
-    channels: [],                // [{ name, members }]
-    joinedChannels: new Set(['General']), // Canales a los que el usuario se unió
-    users: [],                   // [{ userId, username, status, avatar, online, lastSeen }]
-    historyCache: new Map(),     // "CHANNEL:General" -> [mensajes]
-    unreadCounts: new Map(),     // "CHANNEL:Redes" -> 2 | "PRIVATE:Carlos" -> 1
-    lastActivity: new Map(),     // "CHANNEL:General" -> timestamp en ms
+    channels: [],
+    joinedChannels: new Set(['General']), // canales donde estamos unidos
+    users: [],
+    historyCache: new Map(),     // cache de mensajes por conversacion
+    unreadCounts: new Map(),     // contador de no leidos
+    lastActivity: new Map(),     // fecha del ultimo mensaje
     ws: null,
     reconnectTimer: null,
   };
 
-  // ---------- REFERENCIAS AL DOM ----------
+  // Referencias a los elementos del DOM
   const dom = {
     // Auth Modal
     authModal: document.getElementById('auth-modal'),
@@ -116,10 +111,7 @@
   let tempEditAvatarBase64 = null;
   let isRegisterMode = false;
 
-  // ===================================================================
-  // PROTOCOLO JMP (CAPA 7)
-  // ===================================================================
-
+  // Funciones para armar y enviar mensajes al servidor
   function generateUUID() {
     if (typeof crypto !== 'undefined' && crypto.randomUUID) {
       return crypto.randomUUID();
@@ -147,10 +139,7 @@
     return false;
   }
 
-  // ===================================================================
-  // CONEXIÓN WEBSOCKET Y AUTO-RECONEXIÓN
-  // ===================================================================
-
+  // Manejo de la conexión WebSocket y reconexión automática
   function connectWebSocket(onOpenCallback) {
     if (state.ws && (state.ws.readyState === WebSocket.OPEN || state.ws.readyState === WebSocket.CONNECTING)) {
       if (state.ws.readyState === WebSocket.OPEN && onOpenCallback) {
@@ -203,10 +192,7 @@
     };
   }
 
-  // ===================================================================
-  // DISPATCHER DE PDUs ENTRANTES (L7)
-  // ===================================================================
-
+  // Procesa los mensajes recibidos según su tipo
   function handleIncomingPdu(pdu) {
     const { type } = pdu.head;
     const body = pdu.body || {};
@@ -273,10 +259,7 @@
     }
   }
 
-  // ===================================================================
-  // MANEJADORES ESPECÍFICOS DE EVENTOS
-  // ===================================================================
-
+  // Handlers para cada evento recibido
   function onAuthOk(body) {
     dom.authModal.classList.add('hidden');
     dom.appLayout.classList.remove('hidden');
@@ -289,21 +272,21 @@
       token: body.token,
     };
 
-    // Guardar sesión persistente (solo usuario + token, nunca la contraseña)
+    // Guardamos la sesión con el token para no pedir login cada vez
     dom.authPassword.value = '';
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       username: body.username,
       token: body.token,
     }));
 
-    // Solicitar permiso de notificaciones del navegador
+    // Notificaciones de escritorio si el navegador lo permite
     if ('Notification' in window && Notification.permission === 'default') {
       Notification.requestPermission();
     }
 
     renderMyProfile();
 
-    // Cargar marcas de tiempo reales del último mensaje de cada chat enviadas por el servidor
+    // Fechas de última actividad para ordenar la lista de chats
     state.lastActivity = new Map();
     if (body.lastActivity && typeof body.lastActivity === 'object') {
       for (const [k, v] of Object.entries(body.lastActivity)) {
@@ -316,12 +299,12 @@
       renderChannelsList();
     }
 
-    // Inicializar canales unidos reportados por el servidor
+    // Canales a los que estamos unidos
     const initialJoined = Array.isArray(body.joined) ? body.joined : ['General'];
     const prevJoined = state.joinedChannels || new Set();
     state.joinedChannels = new Set(initialJoined);
 
-    // Re-unirse a canales previamente activos si nos reconectamos
+    // Reingresamos a canales abiertos si nos reconectamos
     prevJoined.forEach((ch) => {
       if (!state.joinedChannels.has(ch) && ch !== 'General') {
         sendPdu('JOIN_CHANNEL', { channel: ch });
@@ -333,7 +316,7 @@
       renderUsersList();
     }
 
-    // Pre-cargar automáticamente el último mensaje de cada chat para ordenarlos de inmediato
+    // Pedimos el último mensaje para ordenar las conversaciones
     if (state.channels && state.channels.length > 0) {
       state.channels.forEach((ch) => {
         sendPdu('FETCH_HISTORY', { targetType: 'CHANNEL', targetId: ch.name, limit: 1 });
@@ -345,7 +328,7 @@
       });
     }
 
-    // Seleccionar #General por defecto (sin forzar pantalla de chat en mobile)
+    // Abrimos #General por defecto
     selectConversation('CHANNEL', 'General', '#General', 'Canal público principal', null, true, false);
   }
 
@@ -514,10 +497,7 @@
     }
   }
 
-  // ===================================================================
-  // NOTIFICACIONES, ACTIVIDAD Y CONTADORES DE NO LEÍDOS
-  // ===================================================================
-
+  // Manejo de actividad y mensajes no leídos
   function recordActivity(key, isoStringOrTs) {
     if (!key || !isoStringOrTs) return;
     const ts = typeof isoStringOrTs === 'number'
@@ -599,15 +579,12 @@
           icon: '/favicon.ico',
         });
       } catch (e) {
-        // Ignorar excepciones de políticas en móviles
+        // por si el navegador bloquea la notificación
       }
     }
   }
 
-  // ===================================================================
-  // RENDERIZADO DE INTERFAZ (DOM)
-  // ===================================================================
-
+  // Funciones de renderizado en el DOM
   function renderMyProfile() {
     dom.myUsername.textContent = state.currentUser.username;
     dom.myStatus.textContent = state.currentUser.status || 'En línea';
@@ -626,7 +603,7 @@
   function renderChannelsList() {
     dom.channelsList.innerHTML = '';
 
-    // Ordenamiento inteligente de canales: no leídos primero, luego actividad más reciente, luego #General, luego alfabético
+    // Ordenamos canales: primero con mensajes no leídos, luego por actividad
     const sortedChannels = [...state.channels].sort((a, b) => {
       const keyA = `CHANNEL:${a.name}`;
       const keyB = `CHANNEL:${b.name}`;
@@ -690,7 +667,7 @@
     const filtered = state.users.filter((u) => u.username.toLowerCase().includes(filter));
     dom.usersCount.textContent = state.users.length;
 
-    // Ordenamiento inteligente de mensajes directos: no leídos primero, luego actividad reciente descendente, luego online, luego alfabético
+    // Ordenamos usuarios: primero mensajes no leídos, luego activos y online
     const sortedUsers = [...filtered].sort((a, b) => {
       const keyA = `PRIVATE:${a.username}`;
       const keyB = `PRIVATE:${b.username}`;
@@ -934,10 +911,7 @@
       .replace(/'/g, '&#039;');
   }
 
-  // ===================================================================
-  // REDIMENSIONAMIENTO DE AVATAR EN CLIENTE (CANVAS 200x200)
-  // ===================================================================
-
+  // Redimensionamos la foto con un canvas para no enviar archivos pesados
   function resizeImageToCanvas(file, callback) {
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -960,10 +934,7 @@
     reader.readAsDataURL(file);
   }
 
-  // ===================================================================
-  // GESTIÓN DE ENVÍO DE MENSAJES Y ARCHIVOS
-  // ===================================================================
-
+  // Envío de mensajes y subida de archivos
   function handleSendMessage() {
     const text = dom.inputMessage.value.trim();
     if (!text) return;
@@ -1003,7 +974,7 @@
       try {
         const fileData = e.target.result;
 
-        // 1. Carga fuera de banda vía HTTP POST /api/upload
+        // Subimos el archivo por HTTP
         const response = await fetch('/api/upload', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Session-Token': state.currentUser.token || '' },
@@ -1018,8 +989,7 @@
           throw new Error(result.error || 'Fallo en la subida HTTP');
         }
 
-        // 2. Señalización en tiempo real vía WebSocket con FILE_OFFER
-
+        // Notificamos por WebSocket
         sendPdu('FILE_OFFER', {
           targetType: state.currentTarget.type,
           targetId: state.currentTarget.id,
@@ -1069,11 +1039,8 @@
     dom.chatOptionsMenu.classList.add('hidden');
   }
 
-  // ===================================================================
-  // LISTENERS Y EVENTOS DE INTERFAZ
-  // ===================================================================
-
-  // Alternar Tabs Login / Register
+  // Eventos de la interfaz
+  // Alternar entre login y registro
   dom.tabLogin.onclick = () => {
     isRegisterMode = false;
     dom.tabLogin.classList.add('active');
@@ -1271,9 +1238,7 @@
   function openModal(modalEl) { modalEl.classList.remove('hidden'); }
   function closeModal(modalEl) { modalEl.classList.add('hidden'); }
 
-  // ===================================================================
-  // AUTO-LOGIN POR LOCALSTORAGE AL RECARGAR PÁGINA
-  // ===================================================================
+  // Reconexión automática si había sesión guardada
   const savedSession = localStorage.getItem(STORAGE_KEY);
   if (savedSession) {
     try {
@@ -1289,7 +1254,7 @@
           });
         });
       } else {
-        // Sesión guardada con el formato anterior (con contraseña): se descarta
+        // Limpiamos si no tiene token válido
         localStorage.removeItem(STORAGE_KEY);
       }
     } catch (e) {

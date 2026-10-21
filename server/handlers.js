@@ -1,10 +1,4 @@
-/**
- * Handlers de cada primitiva JMP + router.
- *
- * Etapa 1: AUTH_REGISTER, USER_PRESENCE, desconexión.
- * Etapa 2: login con contraseña, JOIN/LEAVE_CHANNEL, CHANNEL_MSG (pub/sub),
- *          PRIVATE_MSG (unicast + entrega diferida), FETCH_HISTORY.
- */
+// Manejo de eventos del protocolo (auth, mensajes, canales y archivos)
 const path = require('path');
 const crypto = require('crypto');
 const { build, TYPES } = require('./protocol');
@@ -19,12 +13,11 @@ const MIN_PASSWORD = 4;
 const MAX_CONTENT = 4000;
 const DEFAULT_CHANNEL = 'General';
 
-// Validación estricta de datos que luego el cliente renderiza (evita XSS almacenado)
+// Validaciones para avatares y archivos subidos
 const AVATAR_RE = /^data:image\/(png|jpe?g|gif|webp);base64,[A-Za-z0-9+/=]+$/;
 const FILE_URL_RE = /^\/uploads\/[A-Za-z0-9-]+\.[A-Za-z0-9]{1,10}$/;
 
-// Tokens de sesión (en memoria): permiten reanudar sesión y autorizar /api/upload
-// sin guardar la contraseña en el navegador.
+// Tokens de sesión para autorizar subidas y reconexiones
 const tokens = new Map(); // token -> userId
 function issueToken(userId) {
   for (const [t, id] of tokens) if (id === userId) tokens.delete(t);
@@ -34,11 +27,7 @@ function issueToken(userId) {
 }
 function isValidToken(token) { return typeof token === 'string' && tokens.has(token); }
 
-// ======================================================================
-// Utilidades de envío
-// ======================================================================
-
-/** Envío seguro: captura EPIPE / socket cerrado sin romper el servidor. */
+// Envía un mensaje por el socket si sigue abierto
 function safeSend(socket, data) {
   try {
     if (socket.readyState === socket.OPEN) socket.send(data);
@@ -47,14 +36,14 @@ function safeSend(socket, data) {
   }
 }
 
-/** Envía a todos los clientes autenticados (opcionalmente excluyendo uno). */
+// Envía a todos los usuarios conectados
 function broadcast(data, exceptUserId = null) {
   for (const [id, c] of state.clients) {
     if (id !== exceptUserId) safeSend(c.socket, data);
   }
 }
 
-/** Envía a los miembros conectados de un canal. Devuelve cuántos lo recibieron. */
+// Envía a los miembros conectados a un canal
 function sendToChannel(channel, data, exceptUserId = null) {
   let n = 0;
   for (const userId of state.channelMembers(channel)) {
@@ -74,12 +63,12 @@ function broadcastChannelList() {
   broadcast(build(TYPES.CHANNEL_LIST, { channels: state.channelList() }));
 }
 
-/** Normaliza el nombre de canal: quita '#' y espacios. */
+// Limpia el nombre del canal sacando espacios y el caracter '#'
 function cleanChannelName(raw) {
   return raw.trim().replace(/^#/, '');
 }
 
-/** Convierte una fila de messages a la forma que viaja en el protocolo. */
+// Adapta el formato del mensaje guardado al formato de red
 function toWire(row, senderName) {
   return {
     id: row.id,
@@ -92,14 +81,7 @@ function toWire(row, senderName) {
   };
 }
 
-// ======================================================================
-// A. Sesión
-// ======================================================================
-
-/**
- * AUTH_REGISTER: si el username no existe lo REGISTRA; si existe hace LOGIN
- * verificando la contraseña. Es async porque scrypt corre en el thread pool.
- */
+// Registro y login de usuarios
 async function onAuthRegister(ctx, body) {
   if (ctx.userId) return sendError(ctx, 'Ya estás autenticado', TYPES.AUTH_REGISTER);
   if (ctx.authPending) return sendError(ctx, 'Autenticación en curso', TYPES.AUTH_REGISTER);
@@ -216,7 +198,7 @@ async function onAuthRegister(ctx, body) {
   deliverPending(ctx);
 }
 
-/** Entrega los PRIVATE_MSG que llegaron mientras el usuario estaba offline. */
+// Envía mensajes privados que quedaron pendientes mientras el usuario estuvo offline
 function deliverPending(ctx) {
   const pending = storage.getPendingFor(ctx.userId);
   if (!pending.length) return;
@@ -283,7 +265,7 @@ function onProfileUpdate(ctx, body) {
     ok: true,
   }));
 
-  // Notificación en broadcast con USER_PRESENCE a todos
+  // Notificación de presencia al resto de los clientes
   broadcast(build(TYPES.USER_PRESENCE, {
     userId: ctx.userId,
     username: ctx.username,
@@ -296,10 +278,7 @@ function onProfileUpdate(ctx, body) {
   logger.action(ctx.username, 'PROFILE_UPDATE', `Perfil actualizado (${status ? 'estado: "' + status + '"' : ''}${status && avatar ? ', ' : ''}${avatar ? 'avatar Base64' : ''}).`);
 }
 
-// ======================================================================
-// B. Canales y mensajería
-// ======================================================================
-
+// Canales y mensajes
 function onJoinChannel(ctx, body) {
   const requested = cleanChannelName(body.channel);
   if (!CHANNEL_RE.test(requested)) {
@@ -351,10 +330,7 @@ function validateContent(ctx, content, refType) {
   return text;
 }
 
-/**
- * CHANNEL_MSG (Pub/Sub): channels[canal] -> userIds -> clients[userId].socket
- * El emisor también lo recibe (confirmación con id y timestamp del servidor).
- */
+// Envío de mensaje grupal a un canal
 function onChannelMsg(ctx, body) {
   const channel = state.resolveChannel(cleanChannelName(body.channel));
   if (!channel) return sendError(ctx, `El canal '#${body.channel}' no existe`, TYPES.CHANNEL_MSG);
@@ -371,11 +347,7 @@ function onChannelMsg(ctx, body) {
   logger.action(ctx.username, 'CHANNEL_MSG', `'#${channel}' -> ${n} destinatario(s) (${content.length} caracteres).`);
 }
 
-/**
- * PRIVATE_MSG (Unicast): busca el socket del destinatario.
- *  - Conectado    -> entrega inmediata (delivered = 1).
- *  - Desconectado -> queda en SQLite con delivered = 0 hasta que se conecte.
- */
+// Envío de mensaje privado (directo si está online o pendiente si está offline)
 function onPrivateMsg(ctx, body) {
   const target = storage.getUserByName(body.to.trim());
   if (!target) return sendError(ctx, `El usuario '${body.to}' no existe`, TYPES.PRIVATE_MSG);
@@ -399,10 +371,7 @@ function onPrivateMsg(ctx, body) {
     delivered ? 'Entregado.' : 'Destinatario offline: guardado como pendiente.');
 }
 
-// ======================================================================
-// D. Historial
-// ======================================================================
-
+// Historial de mensajes
 function onFetchHistory(ctx, body) {
   const targetType = body.targetType.toUpperCase();
   const limit = Number.isInteger(body.limit) ? body.limit : 50;
@@ -431,10 +400,7 @@ function onFetchHistory(ctx, body) {
   logger.action(ctx.username, 'FETCH_HISTORY', `${label}: ${rows.length} mensaje(s).`);
 }
 
-// ======================================================================
-// C. Transferencia de Archivos
-// ======================================================================
-
+// Transferencia de archivos
 function onFileOffer(ctx, body) {
   if (!ctx.userId) return sendError(ctx, 'Debes autenticarte primero', TYPES.FILE_OFFER);
 
@@ -514,10 +480,7 @@ function onFileOffer(ctx, body) {
   }
 }
 
-// ======================================================================
-// Router
-// ======================================================================
-
+// Router de eventos
 const routes = {
   [TYPES.AUTH_REGISTER]: onAuthRegister,
   [TYPES.PROFILE_UPDATE]: onProfileUpdate,
@@ -532,7 +495,7 @@ const routes = {
 function dispatch(ctx, pdu) {
   const { type } = pdu.head;
 
-  // Todo excepto AUTH_REGISTER requiere sesión
+  // Verificamos que tenga sesión iniciada
   if (type !== TYPES.AUTH_REGISTER && !ctx.userId) {
     logger.warn(ctx.addr, 'UNAUTHORIZED', `Intento de ${type} sin autenticar.`);
     return sendError(ctx, 'Debes autenticarte primero (AUTH_REGISTER)', type);
@@ -541,8 +504,7 @@ function dispatch(ctx, pdu) {
   const handler = routes[type];
   if (!handler) return sendError(ctx, `Primitiva ${type} aún no implementada`, type);
 
-  // Los handlers async devuelven una Promise: capturamos su rechazo para que
-  // un error no quede como "unhandled rejection" y tire el proceso.
+  // Atajamos posibles errores en handlers asíncronos
   const result = handler(ctx, pdu.body, pdu);
   if (result instanceof Promise) {
     result.catch((err) => logger.error(ctx.addr, 'HANDLER', err.stack || err.message));

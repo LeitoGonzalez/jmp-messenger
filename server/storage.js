@@ -1,15 +1,4 @@
-/**
- * StorageEngine: persistencia física en SQLite (data/chat.db).
- *
- * Tablas:
- *   users    -> perfiles (credenciales con hash scrypt, estado, avatar)
- *   channels -> canales creados (sobreviven a reinicios)
- *   messages -> historial de canales y privados (+ flag delivered para offline)
- *
- * Nota: better-sqlite3 es síncrono, pero cada consulta tarda microsegundos
- * (base local, consultas indexadas), por lo que no bloquea el event loop
- * de forma perceptible.
- */
+// Manejo de base de datos SQLite con better-sqlite3
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -20,10 +9,10 @@ const DATA_DIR = path.join(__dirname, '..', 'data');
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const db = new Database(path.join(DATA_DIR, 'chat.db'));
-db.pragma('journal_mode = WAL');   // lecturas y escrituras concurrentes sin bloquearse
+db.pragma('journal_mode = WAL');   // modo WAL para mejor rendimiento
 db.pragma('foreign_keys = ON');
 
-// ---------- Esquema ----------
+// Tablas de la base de datos
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id            TEXT PRIMARY KEY,
@@ -62,14 +51,14 @@ db.exec(`
   );
 `);
 
-// Canales por defecto del proyecto
+// Canales iniciales
 const DEFAULT_CHANNELS = ['General', 'Random', 'Redes'];
 const insertChannelStmt = db.prepare(
   'INSERT OR IGNORE INTO channels (name, created_by, created_at) VALUES (?, ?, ?)'
 );
 for (const name of DEFAULT_CHANNELS) insertChannelStmt.run(name, null, new Date().toISOString());
 
-// Usuarios por defecto del proyecto (password '1234')
+// Usuarios de prueba iniciales (password '1234')
 const DEFAULT_USERS = ['Julieta', 'Daniela', 'Leonardo', 'Alexandra', 'Santiago'];
 const DEFAULT_SALT = Buffer.from('87e942f9a87027768ec01ea905123ff8', 'hex');
 const DEFAULT_HASH = crypto.scryptSync('1234', DEFAULT_SALT, 64);
@@ -92,7 +81,7 @@ for (const username of DEFAULT_USERS) {
   });
 }
 
-// ---------- Sentencias preparadas (se compilan una vez, evitan SQL injection) ----------
+// Consultas preparadas
 const stmts = {
   getUserByName: db.prepare('SELECT * FROM users WHERE username = ?'),
   getUserById:   db.prepare('SELECT * FROM users WHERE id = ?'),
@@ -136,7 +125,7 @@ const stmts = {
                               GROUP BY u.username`),
 };
 
-// ---------- API ----------
+// Funciones de consulta y actualización
 function getUserByName(username) { return stmts.getUserByName.get(username) || null; }
 function getUserById(id) { return stmts.getUserById.get(id) || null; }
 
@@ -167,7 +156,7 @@ function createChannel(name, createdBy) {
   return getChannel(name);
 }
 
-/** INSERT de un mensaje. Devuelve el registro guardado. */
+// Guarda un mensaje en la base y devuelve el objeto guardado
 function saveMessage({ senderId, targetType, targetId, content, msgType = 'TEXT', delivered = 1 }) {
   const row = {
     id: randomUUID(),
@@ -185,7 +174,7 @@ function saveMessage({ senderId, targetType, targetId, content, msgType = 'TEXT'
 
 function getPendingFor(userId) { return stmts.pendingFor.all(userId); }
 
-/** Marca varios mensajes como entregados en una sola transacción. */
+// Marca varios mensajes pendientes como entregados
 const markDelivered = db.transaction((ids) => {
   for (const id of ids) stmts.markDelivered.run(id);
 });
@@ -206,12 +195,12 @@ function getLastActivity(userId) {
     const privateRows = stmts.privateLastMsg.all(userId, userId, userId);
     for (const r of privateRows) activity[`PRIVATE:${r.username}`] = r.last_ts;
   } catch (err) {
-    // Si la tabla no tuviese mensajes o fallara la consulta
+    // por si la consulta falla o no hay datos
   }
   return activity;
 }
 
-// ---------- Membresía de canales (persistente) ----------
+// Manejo de miembros de canales
 const addMemberStmt = db.prepare('INSERT OR IGNORE INTO channel_members (user_id, channel) VALUES (?, ?)');
 const removeMemberStmt = db.prepare('DELETE FROM channel_members WHERE user_id = ? AND channel = ?');
 const membershipsStmt = db.prepare('SELECT channel FROM channel_members WHERE user_id = ?');
