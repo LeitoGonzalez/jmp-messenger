@@ -25,6 +25,7 @@
     users: [],                   // [{ userId, username, status, avatar, online, lastSeen }]
     historyCache: new Map(),     // "CHANNEL:General" -> [mensajes]
     unreadCounts: new Map(),     // "CHANNEL:Redes" -> 2 | "PRIVATE:Carlos" -> 1
+    lastActivity: new Map(),     // "CHANNEL:General" -> timestamp en ms
     ws: null,
     reconnectTimer: null,
   };
@@ -63,6 +64,7 @@
     btnOpenCreateChannel: document.getElementById('btn-open-create-channel'),
 
     // Chat Area
+    btnBackToSidebar: document.getElementById('btn-back-to-sidebar'),
     chatTargetTitle: document.getElementById('chat-target-title'),
     chatTargetSubtitle: document.getElementById('chat-target-subtitle'),
     chatTargetAvatar: document.getElementById('chat-target-avatar'),
@@ -277,6 +279,8 @@
 
     renderMyProfile();
 
+    loadActivityMap();
+
     if (body.channels) {
       state.channels = body.channels;
       renderChannelsList();
@@ -286,8 +290,8 @@
       renderUsersList();
     }
 
-    // Seleccionar #General por defecto
-    selectConversation('CHANNEL', 'General', '#General', 'Canal público principal');
+    // Seleccionar #General por defecto (sin forzar pantalla de chat en mobile)
+    selectConversation('CHANNEL', 'General', '#General', 'Canal público principal', null, true, false);
   }
 
   function onUserPresence(body) {
@@ -342,6 +346,7 @@
 
   function onChannelMsg(body) {
     const key = `CHANNEL:${body.channel}`;
+    recordActivity(key, body.timestamp);
     appendMessageToCache(key, body);
 
     const isCurrentActive = state.currentTarget.type === 'CHANNEL' && state.currentTarget.id === body.channel;
@@ -353,6 +358,7 @@
       incrementUnread(key);
       notifyBackground(`Nuevo mensaje en #${body.channel}`, `${body.from.username}: ${body.content}`);
     }
+    renderChannelsList();
   }
 
   function onPrivateMsg(body) {
@@ -360,6 +366,7 @@
     const otherUser = isMine ? body.to.username : body.from.username;
     const key = `PRIVATE:${otherUser}`;
 
+    recordActivity(key, body.timestamp);
     appendMessageToCache(key, body);
 
     const isCurrentActive = state.currentTarget.type === 'PRIVATE' && state.currentTarget.id === otherUser;
@@ -370,6 +377,7 @@
       incrementUnread(key);
       notifyBackground(`Mensaje de ${body.from.username}`, body.content);
     }
+    renderUsersList();
   }
 
   function onFileOffer(body) {
@@ -377,6 +385,7 @@
     const otherUser = body.from.username === state.currentUser.username ? body.to?.username : body.from.username;
     const key = isChannel ? `CHANNEL:${body.targetId}` : `PRIVATE:${otherUser}`;
 
+    recordActivity(key, body.timestamp);
     appendMessageToCache(key, body);
 
     const isCurrentActive = (isChannel && state.currentTarget.type === 'CHANNEL' && state.currentTarget.id === body.targetId) ||
@@ -389,22 +398,30 @@
       incrementUnread(key);
       notifyBackground(`Archivo de ${body.from.username}`, `Envió: ${body.fileName || 'un archivo adjunto'}`);
     }
+    if (isChannel) renderChannelsList();
+    else renderUsersList();
   }
 
   function onHistoryResponse(body) {
     const key = `${body.targetType}:${body.targetId}`;
     const messages = body.messages || [];
 
-    // Garantizar ordenamiento cronológico ascendente estricto
-    messages.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-    state.historyCache.set(key, messages);
+    // Fusión indexada y ordenamiento cronológico ascendente estricto
+    const merged = mergeIntoCache(key, messages);
+
+    if (merged.length > 0) {
+      const latest = merged[merged.length - 1];
+      recordActivity(key, latest.timestamp);
+      if (body.targetType === 'CHANNEL') renderChannelsList();
+      else renderUsersList();
+    }
 
     if (state.currentTarget.type === body.targetType && state.currentTarget.id === body.targetId) {
       dom.messagesContainer.innerHTML = '';
-      if (messages.length === 0) {
+      if (merged.length === 0) {
         showSystemMessage('No hay mensajes previos en esta conversación.');
       } else {
-        messages.forEach(renderSingleMessage);
+        merged.forEach(renderSingleMessage);
       }
       scrollToBottom();
     }
@@ -435,8 +452,92 @@
   }
 
   // ===================================================================
-  // NOTIFICACIONES Y CONTADORES DE NO LEÍDOS
+  // NOTIFICACIONES, ACTIVIDAD Y CONTADORES DE NO LEÍDOS
   // ===================================================================
+
+  function loadActivityMap() {
+    state.lastActivity = new Map();
+    if (!state.currentUser?.username) return;
+    try {
+      const raw = localStorage.getItem(`jmp_chat_activity_${state.currentUser.username}`);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        for (const [k, v] of Object.entries(parsed)) {
+          state.lastActivity.set(k, Number(v) || 0);
+        }
+      }
+    } catch (e) {
+      console.warn('[JMP] No se pudo leer actividad previa:', e);
+    }
+  }
+
+  function saveActivityMap() {
+    if (!state.currentUser?.username) return;
+    try {
+      const obj = Object.fromEntries(state.lastActivity);
+      localStorage.setItem(`jmp_chat_activity_${state.currentUser.username}`, JSON.stringify(obj));
+    } catch (e) {
+      // Evitar errores de quota en localStorage
+    }
+  }
+
+  function recordActivity(key, isoStringOrTs) {
+    if (!key) return;
+    const ts = typeof isoStringOrTs === 'number'
+      ? isoStringOrTs
+      : new Date(isoStringOrTs || Date.now()).getTime();
+    const prev = state.lastActivity.get(key) || 0;
+    if (ts > prev) {
+      state.lastActivity.set(key, ts);
+      saveActivityMap();
+    }
+  }
+
+  function formatTimeShort(ts) {
+    if (!ts) return '';
+    const d = new Date(ts);
+    const now = new Date();
+    const isToday = d.toDateString() === now.toDateString();
+    const h = String(d.getHours()).padStart(2, '0');
+    const m = String(d.getMinutes()).padStart(2, '0');
+    if (isToday) {
+      return `${h}:${m}`;
+    }
+    const day = String(d.getDate()).padStart(2, '0');
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    return `${day}/${month}`;
+  }
+
+  function mergeIntoCache(key, newMessages) {
+    if (!state.historyCache.has(key)) {
+      state.historyCache.set(key, []);
+    }
+    const current = state.historyCache.get(key);
+    const map = new Map();
+
+    for (const m of current) {
+      if (m && m.id) map.set(m.id, m);
+    }
+    for (const m of newMessages) {
+      if (m && m.id) map.set(m.id, m);
+    }
+
+    const merged = Array.from(map.values());
+    merged.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    state.historyCache.set(key, merged);
+    return merged;
+  }
+
+  function appendMessageToCache(key, msg) {
+    if (!state.historyCache.has(key)) {
+      state.historyCache.set(key, []);
+    }
+    const list = state.historyCache.get(key);
+    if (!list.some((m) => m.id === msg.id)) {
+      list.push(msg);
+      list.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    }
+  }
 
   function incrementUnread(key) {
     const current = state.unreadCounts.get(key) || 0;
@@ -487,19 +588,60 @@
 
   function renderChannelsList() {
     dom.channelsList.innerHTML = '';
-    state.channels.forEach((ch) => {
+
+    // Ordenamiento inteligente de canales: no leídos primero, luego actividad más reciente, luego #General, luego alfabético
+    const sortedChannels = [...state.channels].sort((a, b) => {
+      const keyA = `CHANNEL:${a.name}`;
+      const keyB = `CHANNEL:${b.name}`;
+      const unreadA = state.unreadCounts.get(keyA) || 0;
+      const unreadB = state.unreadCounts.get(keyB) || 0;
+      const tsA = state.lastActivity.get(keyA) || 0;
+      const tsB = state.lastActivity.get(keyB) || 0;
+
+      if (unreadA !== unreadB) {
+        return unreadB - unreadA;
+      }
+      if (tsA !== tsB) {
+        return tsB - tsA;
+      }
+      if (a.name.toLowerCase() === 'general') return -1;
+      if (b.name.toLowerCase() === 'general') return 1;
+      return a.name.localeCompare(b.name);
+    });
+
+    sortedChannels.forEach((ch) => {
       const key = `CHANNEL:${ch.name}`;
       const unread = state.unreadCounts.get(key) || 0;
+      const lastTs = state.lastActivity.get(key) || 0;
       const isActive = state.currentTarget.type === 'CHANNEL' && state.currentTarget.id === ch.name;
 
       const li = document.createElement('li');
       li.className = `item-row ${isActive ? 'active' : ''}`;
+
+      const timeHtml = lastTs > 0 ? `<span class="item-time">${formatTimeShort(lastTs)}</span>` : '';
+      const badgeHtml = unread > 0
+        ? `<span class="unread-badge">${unread}</span>`
+        : `<span class="item-badge-members">${ch.members}</span>`;
+
       li.innerHTML = `
         <span class="channel-hash">#</span>
         <span class="item-label">${escapeHtml(ch.name)}</span>
-        ${unread > 0 ? `<span class="unread-badge">${unread}</span>` : `<span class="item-badge-members">${ch.members}</span>`}
+        <div class="item-meta-right">
+          ${timeHtml}
+          ${badgeHtml}
+        </div>
       `;
-      li.onclick = () => selectConversation('CHANNEL', ch.name, `#${ch.name}`, `${ch.members} miembro(s) conectado(s)`);
+      li.onclick = () => {
+        selectConversation(
+          'CHANNEL',
+          ch.name,
+          `#${ch.name}`,
+          `${ch.members} miembro(s) conectado(s)`,
+          null,
+          true,
+          true
+        );
+      };
       dom.channelsList.appendChild(li);
     });
   }
@@ -511,9 +653,33 @@
     const filtered = state.users.filter((u) => u.username.toLowerCase().includes(filter));
     dom.usersCount.textContent = state.users.length;
 
-    filtered.forEach((u) => {
+    // Ordenamiento inteligente de mensajes directos: no leídos primero, luego actividad reciente descendente, luego online, luego alfabético
+    const sortedUsers = [...filtered].sort((a, b) => {
+      const keyA = `PRIVATE:${a.username}`;
+      const keyB = `PRIVATE:${b.username}`;
+      const unreadA = state.unreadCounts.get(keyA) || 0;
+      const unreadB = state.unreadCounts.get(keyB) || 0;
+      const tsA = state.lastActivity.get(keyA) || 0;
+      const tsB = state.lastActivity.get(keyB) || 0;
+
+      if (unreadA !== unreadB) {
+        return unreadB - unreadA;
+      }
+      if (tsA > 0 || tsB > 0) {
+        if (tsA !== tsB) {
+          return tsB - tsA;
+        }
+      }
+      if (Boolean(a.online) !== Boolean(b.online)) {
+        return a.online ? -1 : 1;
+      }
+      return a.username.localeCompare(b.username);
+    });
+
+    sortedUsers.forEach((u) => {
       const key = `PRIVATE:${u.username}`;
       const unread = state.unreadCounts.get(key) || 0;
+      const lastTs = state.lastActivity.get(key) || 0;
       const isActive = state.currentTarget.type === 'PRIVATE' && state.currentTarget.id === u.username;
 
       const li = document.createElement('li');
@@ -523,8 +689,11 @@
         ? `<img src="${u.avatar}" class="avatar-circle" style="width:28px;height:28px;">`
         : `<div class="avatar-circle avatar-placeholder" style="width:28px;height:28px;font-size:12px;">${u.username.charAt(0).toUpperCase()}</div>`;
 
+      const timeHtml = lastTs > 0 ? `<span class="item-time">${formatTimeShort(lastTs)}</span>` : '';
+      const badgeHtml = unread > 0 ? `<span class="unread-badge">${unread}</span>` : '';
+
       li.innerHTML = `
-        <div style="position:relative;">
+        <div style="position:relative;flex-shrink:0;">
           ${avatarHtml}
           <span class="presence-badge ${u.online ? 'online' : 'offline'}" style="width:8px;height:8px;border-width:1.5px;"></span>
         </div>
@@ -532,23 +701,34 @@
           <div class="item-label">${escapeHtml(u.username)}</div>
           <div style="font-size:11px;color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(u.status || (u.online ? 'En línea' : 'Desconectado'))}</div>
         </div>
-        ${unread > 0 ? `<span class="unread-badge">${unread}</span>` : ''}
+        <div class="item-meta-right">
+          ${timeHtml}
+          ${badgeHtml}
+        </div>
       `;
 
-      li.onclick = () => selectConversation(
-        'PRIVATE',
-        u.username,
-        u.username,
-        u.online ? (u.status || 'En línea') : 'Desconectado',
-        u.avatar,
-        u.online
-      );
+      li.onclick = () => {
+        selectConversation(
+          'PRIVATE',
+          u.username,
+          u.username,
+          u.online ? (u.status || 'En línea') : 'Desconectado',
+          u.avatar,
+          u.online,
+          true
+        );
+      };
       dom.usersList.appendChild(li);
     });
   }
 
-  function selectConversation(type, id, title, subtitle, avatar = null, online = true) {
+  function selectConversation(type, id, title, subtitle, avatar = null, online = true, isUserInteraction = true) {
     state.currentTarget = { type, id, title, subtitle, avatar, online };
+
+    if (isUserInteraction) {
+      dom.appLayout.classList.add('mobile-chat-open');
+      recordActivity(`${type}:${id}`, new Date().toISOString());
+    }
 
     // Limpiar badge de no leídos de esta conversación
     clearUnread(`${type}:${id}`);
@@ -613,7 +793,14 @@
         const sizeStr = msg.fileSize ? ` • ${(msg.fileSize / 1024).toFixed(1)} KB` : '';
         bodyHtml = `
           <div class="file-card-preview">
-            <div class="file-icon">📄</div>
+            <div class="file-icon">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                <polyline points="14 2 14 8 20 8"></polyline>
+                <line x1="16" y1="13" x2="8" y2="13"></line>
+                <line x1="16" y1="17" x2="8" y2="17"></line>
+              </svg>
+            </div>
             <div class="file-card-info">
               <div class="file-card-title" title="${escapeHtml(rawName)}">${escapeHtml(rawName)}</div>
               <div class="file-card-size">Documento${sizeStr}</div>
@@ -654,13 +841,6 @@
     div.className = 'system-event-message';
     div.textContent = text;
     dom.messagesContainer.appendChild(div);
-  }
-
-  function appendMessageToCache(key, msg) {
-    if (!state.historyCache.has(key)) {
-      state.historyCache.set(key, []);
-    }
-    state.historyCache.get(key).push(msg);
   }
 
   function scrollToBottom() {
@@ -725,6 +905,10 @@
       sendPdu('PRIVATE_MSG', { to: state.currentTarget.id, content: text });
     }
 
+    recordActivity(`${state.currentTarget.type}:${state.currentTarget.id}`, new Date().toISOString());
+    if (state.currentTarget.type === 'CHANNEL') renderChannelsList();
+    else renderUsersList();
+
     dom.inputMessage.value = '';
     dom.inputMessage.focus();
   }
@@ -767,6 +951,10 @@
           fileUrl: result.fileUrl,
           fileSize: result.fileSize,
         });
+
+        recordActivity(`${state.currentTarget.type}:${state.currentTarget.id}`, new Date().toISOString());
+        if (state.currentTarget.type === 'CHANNEL') renderChannelsList();
+        else renderUsersList();
 
       } catch (err) {
         console.error('[Upload]', err);
@@ -865,6 +1053,13 @@
     });
   };
 
+  // Botón volver a lista de chats en vista móvil
+  if (dom.btnBackToSidebar) {
+    dom.btnBackToSidebar.onclick = () => {
+      dom.appLayout.classList.remove('mobile-chat-open');
+    };
+  }
+
   // Envío de mensajes con Enter o botón
   dom.btnSend.onclick = handleSendMessage;
   dom.inputMessage.onkeydown = (e) => {
@@ -920,7 +1115,7 @@
       sendPdu('JOIN_CHANNEL', { channel: name });
       closeModal(dom.channelModal);
       dom.newChannelInput.value = '';
-      selectConversation('CHANNEL', name, `#${name}`, 'Canal público');
+      selectConversation('CHANNEL', name, `#${name}`, 'Canal público', null, true, true);
     }
   };
 
@@ -967,6 +1162,7 @@
   // Logout
   dom.btnLogout.onclick = () => {
     if (confirm('¿Deseas cerrar sesión en JMP Chat?')) {
+      dom.appLayout.classList.remove('mobile-chat-open');
       localStorage.removeItem(STORAGE_KEY);
       if (state.ws) state.ws.close(1000);
       location.reload();
