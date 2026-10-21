@@ -7,7 +7,8 @@
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
     "test:client": "node scripts/test-client.js",
-    "test": "node scripts/test-etapa2.js"
+    "test": "node scripts/test-etapa2.js",
+    "reset-db": "node scripts/clean-db.js"
   },
   "keywords": [
     "chat",

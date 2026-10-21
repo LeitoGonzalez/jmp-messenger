@@ -279,7 +279,13 @@
 
     renderMyProfile();
 
-    loadActivityMap();
+    // Cargar marcas de tiempo reales del último mensaje de cada chat enviadas por el servidor
+    state.lastActivity = new Map();
+    if (body.lastActivity && typeof body.lastActivity === 'object') {
+      for (const [k, v] of Object.entries(body.lastActivity)) {
+        if (v) state.lastActivity.set(k, new Date(v).getTime());
+      }
+    }
 
     if (body.channels) {
       state.channels = body.channels;
@@ -455,41 +461,15 @@
   // NOTIFICACIONES, ACTIVIDAD Y CONTADORES DE NO LEÍDOS
   // ===================================================================
 
-  function loadActivityMap() {
-    state.lastActivity = new Map();
-    if (!state.currentUser?.username) return;
-    try {
-      const raw = localStorage.getItem(`jmp_chat_activity_${state.currentUser.username}`);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        for (const [k, v] of Object.entries(parsed)) {
-          state.lastActivity.set(k, Number(v) || 0);
-        }
-      }
-    } catch (e) {
-      console.warn('[JMP] No se pudo leer actividad previa:', e);
-    }
-  }
-
-  function saveActivityMap() {
-    if (!state.currentUser?.username) return;
-    try {
-      const obj = Object.fromEntries(state.lastActivity);
-      localStorage.setItem(`jmp_chat_activity_${state.currentUser.username}`, JSON.stringify(obj));
-    } catch (e) {
-      // Evitar errores de quota en localStorage
-    }
-  }
-
   function recordActivity(key, isoStringOrTs) {
-    if (!key) return;
+    if (!key || !isoStringOrTs) return;
     const ts = typeof isoStringOrTs === 'number'
       ? isoStringOrTs
-      : new Date(isoStringOrTs || Date.now()).getTime();
+      : new Date(isoStringOrTs).getTime();
+    if (isNaN(ts)) return;
     const prev = state.lastActivity.get(key) || 0;
     if (ts > prev) {
       state.lastActivity.set(key, ts);
-      saveActivityMap();
     }
   }
 
@@ -727,7 +707,6 @@
 
     if (isUserInteraction) {
       dom.appLayout.classList.add('mobile-chat-open');
-      recordActivity(`${type}:${id}`, new Date().toISOString());
     }
 
     // Limpiar badge de no leídos de esta conversación
@@ -905,10 +884,6 @@
       sendPdu('PRIVATE_MSG', { to: state.currentTarget.id, content: text });
     }
 
-    recordActivity(`${state.currentTarget.type}:${state.currentTarget.id}`, new Date().toISOString());
-    if (state.currentTarget.type === 'CHANNEL') renderChannelsList();
-    else renderUsersList();
-
     dom.inputMessage.value = '';
     dom.inputMessage.focus();
   }
@@ -951,10 +926,6 @@
           fileUrl: result.fileUrl,
           fileSize: result.fileSize,
         });
-
-        recordActivity(`${state.currentTarget.type}:${state.currentTarget.id}`, new Date().toISOString());
-        if (state.currentTarget.type === 'CHANNEL') renderChannelsList();
-        else renderUsersList();
 
       } catch (err) {
         console.error('[Upload]', err);

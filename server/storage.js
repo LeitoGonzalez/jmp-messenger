@@ -96,6 +96,14 @@ const stmts = {
                                   AND ((m.sender_id = @a AND m.target_id = @b) OR (m.sender_id = @b AND m.target_id = @a))
                                 ORDER BY m.timestamp DESC, m.rowid DESC LIMIT @limit
                               ) ORDER BY timestamp ASC`),
+
+  channelLastMsg: db.prepare(`SELECT target_id AS channel, MAX(timestamp) AS last_ts
+                              FROM messages WHERE target_type = 'CHANNEL' GROUP BY target_id`),
+  privateLastMsg: db.prepare(`SELECT u.username, MAX(m.timestamp) AS last_ts
+                              FROM messages m
+                              JOIN users u ON u.id = CASE WHEN m.sender_id = ? THEN m.target_id ELSE m.sender_id END
+                              WHERE m.target_type = 'PRIVATE' AND (m.sender_id = ? OR m.target_id = ?)
+                              GROUP BY u.username`),
 };
 
 // ---------- API ----------
@@ -158,11 +166,26 @@ function getHistory(targetType, targetId, { requesterId, limit = 50 } = {}) {
   return stmts.privateHistory.all({ a: requesterId, b: targetId, limit });
 }
 
+function getLastActivity(userId) {
+  const activity = {};
+  if (!userId) return activity;
+  try {
+    const channelRows = stmts.channelLastMsg.all();
+    for (const r of channelRows) activity[`CHANNEL:${r.channel}`] = r.last_ts;
+
+    const privateRows = stmts.privateLastMsg.all(userId, userId, userId);
+    for (const r of privateRows) activity[`PRIVATE:${r.username}`] = r.last_ts;
+  } catch (err) {
+    // Si la tabla no tuviese mensajes o fallara la consulta
+  }
+  return activity;
+}
+
 function close() { db.close(); }
 
 module.exports = {
   getUserByName, getUserById, createUser, updateProfile, touchUser, listUsers,
   listChannels, getChannel, createChannel,
-  saveMessage, getPendingFor, markDelivered, getHistory,
+  saveMessage, getPendingFor, markDelivered, getHistory, getLastActivity,
   close,
 };

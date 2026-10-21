@@ -157,6 +157,7 @@ async function onAuthRegister(ctx, body) {
     joined: [DEFAULT_CHANNEL],
     users: state.publicUsers(),
     channels: state.channelList(),
+    lastActivity: storage.getLastActivity(user.id),
   }));
 
   // Presencia al resto
