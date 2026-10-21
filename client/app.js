@@ -22,6 +22,7 @@
       online: true,
     },
     channels: [],                // [{ name, members }]
+    joinedChannels: new Set(['General']), // Canales a los que el usuario se unió
     users: [],                   // [{ userId, username, status, avatar, online, lastSeen }]
     historyCache: new Map(),     // "CHANNEL:General" -> [mensajes]
     unreadCounts: new Map(),     // "CHANNEL:Redes" -> 2 | "PRIVATE:Carlos" -> 1
@@ -74,11 +75,18 @@
     chatOptionsMenu: document.getElementById('chat-options-menu'),
     btnExportChat: document.getElementById('btn-export-chat'),
     btnClearChat: document.getElementById('btn-clear-chat'),
+    btnLeaveChannel: document.getElementById('btn-leave-channel'),
     messagesContainer: document.getElementById('messages-container'),
+    chatInputBar: document.getElementById('chat-input-bar'),
     inputMessage: document.getElementById('input-message'),
     btnSend: document.getElementById('btn-send'),
     btnAttach: document.getElementById('btn-attach'),
     fileInput: document.getElementById('file-input'),
+
+    // Join Channel Bar
+    chatJoinBar: document.getElementById('chat-join-bar'),
+    joinBarChannelName: document.getElementById('join-bar-channel-name'),
+    btnJoinChannel: document.getElementById('btn-join-channel'),
 
     // Profile Edit Modal
     profileModal: document.getElementById('profile-modal'),
@@ -219,6 +227,22 @@
         onChannelEvent(body);
         break;
 
+      case 'JOIN_CHANNEL':
+        if (body.channel) {
+          state.joinedChannels.add(body.channel);
+          updateInputOrJoinBar();
+          renderChannelsList();
+        }
+        break;
+
+      case 'LEAVE_CHANNEL':
+        if (body.channel) {
+          state.joinedChannels.delete(body.channel);
+          updateInputOrJoinBar();
+          renderChannelsList();
+        }
+        break;
+
       case 'CHANNEL_MSG':
         onChannelMsg(body);
         break;
@@ -291,6 +315,19 @@
       state.channels = body.channels;
       renderChannelsList();
     }
+
+    // Inicializar canales unidos reportados por el servidor
+    const initialJoined = Array.isArray(body.joined) ? body.joined : ['General'];
+    const prevJoined = state.joinedChannels || new Set();
+    state.joinedChannels = new Set(initialJoined);
+
+    // Re-unirse a canales previamente activos si nos reconectamos
+    prevJoined.forEach((ch) => {
+      if (!state.joinedChannels.has(ch) && ch !== 'General') {
+        sendPdu('JOIN_CHANNEL', { channel: ch });
+        state.joinedChannels.add(ch);
+      }
+    });
     if (body.users) {
       state.users = body.users.filter((u) => u.username !== state.currentUser.username);
       renderUsersList();
@@ -457,6 +494,14 @@
   function onErrorPdu(body) {
     const msg = body.error || 'Ocurrió un error en el servidor';
     console.warn('[JMP ERROR]', msg);
+
+    // Si ya somos miembro de un canal, registrarlo localmente sin interrumpir al usuario
+    if (body.refType === 'JOIN_CHANNEL' && msg.includes('Ya sos miembro')) {
+      if (state.currentTarget.type === 'CHANNEL') {
+        state.joinedChannels.add(state.currentTarget.id);
+      }
+      return;
+    }
 
     if (dom.authModal.classList.contains('hidden')) {
       alert(`Aviso: ${msg}`);
@@ -727,10 +772,41 @@
     renderChatHeader();
     renderChannelsList();
     renderUsersList();
+    updateInputOrJoinBar();
 
     // Limpiar contenedor de mensajes y solicitar historial indexado
     dom.messagesContainer.innerHTML = '';
     sendPdu('FETCH_HISTORY', { targetType: type, targetId: id, limit: 50 });
+  }
+
+  function updateInputOrJoinBar() {
+    if (!dom.chatInputBar || !dom.chatJoinBar) return;
+
+    if (state.currentTarget.type === 'CHANNEL') {
+      const isMember = state.joinedChannels && state.joinedChannels.has(state.currentTarget.id);
+      if (isMember) {
+        dom.chatJoinBar.classList.add('hidden');
+        dom.chatInputBar.classList.remove('hidden');
+      } else {
+        dom.chatInputBar.classList.add('hidden');
+        dom.chatJoinBar.classList.remove('hidden');
+        if (dom.joinBarChannelName) {
+          dom.joinBarChannelName.textContent = `#${state.currentTarget.id}`;
+        }
+      }
+
+      if (dom.btnLeaveChannel) {
+        if (isMember && state.currentTarget.id.toLowerCase() !== 'general') {
+          dom.btnLeaveChannel.classList.remove('hidden');
+        } else {
+          dom.btnLeaveChannel.classList.add('hidden');
+        }
+      }
+    } else {
+      dom.chatJoinBar.classList.add('hidden');
+      dom.chatInputBar.classList.remove('hidden');
+      if (dom.btnLeaveChannel) dom.btnLeaveChannel.classList.add('hidden');
+    }
   }
 
   function renderChatHeader() {
@@ -891,6 +967,10 @@
     if (!text) return;
 
     if (state.currentTarget.type === 'CHANNEL') {
+      if (!state.joinedChannels.has(state.currentTarget.id)) {
+        updateInputOrJoinBar();
+        return;
+      }
       sendPdu('CHANNEL_MSG', { channel: state.currentTarget.id, content: text });
     } else {
       sendPdu('PRIVATE_MSG', { to: state.currentTarget.id, content: text });
@@ -902,6 +982,12 @@
 
   async function handleFileUpload(file) {
     if (!file) return;
+
+    if (state.currentTarget.type === 'CHANNEL' && !state.joinedChannels.has(state.currentTarget.id)) {
+      alert('Debés unirte a este canal para poder enviar archivos.');
+      updateInputOrJoinBar();
+      return;
+    }
 
     if (file.size > 9 * 1024 * 1024) {
       alert('Aviso: El archivo supera el límite de 9 MB.');
@@ -931,6 +1017,7 @@
         }
 
         // 2. Señalización en tiempo real vía WebSocket con FILE_OFFER
+
         sendPdu('FILE_OFFER', {
           targetType: state.currentTarget.type,
           targetId: state.currentTarget.id,
@@ -1083,6 +1170,30 @@
     dom.chatOptionsMenu.classList.add('hidden');
   };
 
+  // Botón Unirse al Canal (cuando no se es miembro)
+  if (dom.btnJoinChannel) {
+    dom.btnJoinChannel.onclick = () => {
+      const channel = state.currentTarget.id;
+      sendPdu('JOIN_CHANNEL', { channel });
+      state.joinedChannels.add(channel);
+      updateInputOrJoinBar();
+      dom.inputMessage.focus();
+      renderChannelsList();
+    };
+  }
+
+  // Opción Salir del Canal (menú de 3 puntos)
+  if (dom.btnLeaveChannel) {
+    dom.btnLeaveChannel.onclick = () => {
+      const channel = state.currentTarget.id;
+      sendPdu('LEAVE_CHANNEL', { channel });
+      state.joinedChannels.delete(channel);
+      dom.chatOptionsMenu.classList.add('hidden');
+      updateInputOrJoinBar();
+      renderChannelsList();
+    };
+  }
+
   // Filtrado en búsqueda rápida del sidebar
   dom.searchFilter.oninput = () => {
     renderChannelsList();
@@ -1097,6 +1208,7 @@
     const name = dom.newChannelInput.value.trim().replace(/^#/, '');
     if (name) {
       sendPdu('JOIN_CHANNEL', { channel: name });
+      state.joinedChannels.add(name);
       closeModal(dom.channelModal);
       dom.newChannelInput.value = '';
       selectConversation('CHANNEL', name, `#${name}`, 'Canal público', null, true, true);

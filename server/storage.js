@@ -12,7 +12,8 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { randomUUID } = require('crypto');
+const crypto = require('crypto');
+const { randomUUID } = crypto;
 const Database = require('better-sqlite3');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
@@ -55,12 +56,35 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_msg_pending ON messages(target_id, delivered) WHERE delivered = 0;
 `);
 
-// Canales por defecto
-const DEFAULT_CHANNELS = ['General', 'Redes', 'Random'];
+// Canales por defecto del proyecto
+const DEFAULT_CHANNELS = ['General', 'Random', 'Redes'];
 const insertChannelStmt = db.prepare(
   'INSERT OR IGNORE INTO channels (name, created_by, created_at) VALUES (?, ?, ?)'
 );
 for (const name of DEFAULT_CHANNELS) insertChannelStmt.run(name, null, new Date().toISOString());
+
+// Usuarios por defecto del proyecto (password '1234')
+const DEFAULT_USERS = ['Julieta', 'Daniela', 'Leonardo', 'Alexandra', 'Santiago'];
+const DEFAULT_SALT = Buffer.from('87e942f9a87027768ec01ea905123ff8', 'hex');
+const DEFAULT_HASH = crypto.scryptSync('1234', DEFAULT_SALT, 64);
+const DEFAULT_PASSWORD_HASH = `scrypt$${DEFAULT_SALT.toString('hex')}$${DEFAULT_HASH.toString('hex')}`;
+
+const insertUserInitStmt = db.prepare(`
+  INSERT OR IGNORE INTO users (id, username, password_hash, status, avatar, created_at, last_seen)
+  VALUES (@id, @username, @password_hash, @status, @avatar, @created_at, @created_at)
+`);
+
+const nowIso = new Date().toISOString();
+for (const username of DEFAULT_USERS) {
+  insertUserInitStmt.run({
+    id: 'u_' + username.toLowerCase(),
+    username,
+    password_hash: DEFAULT_PASSWORD_HASH,
+    status: 'Disponible',
+    avatar: null,
+    created_at: nowIso,
+  });
+}
 
 // ---------- Sentencias preparadas (se compilan una vez, evitan SQL injection) ----------
 const stmts = {

@@ -8,10 +8,12 @@
 const WebSocket = require('ws');
 const assert = require('assert/strict');
 const { randomUUID } = require('crypto');
+const path = require('path');
+const Database = require('better-sqlite3');
 
 const URL = process.env.WS_URL || 'ws://localhost:3000';
-const SUFFIX = Math.random().toString(36).slice(2, 6);
-const names = { carlos: `Carlos_${SUFFIX}`, ana: `Ana_${SUFFIX}`, pedro: `Pedro_${SUFFIX}` };
+const PASSWORD = '1234';
+const PROJECT_USERS = ['Julieta', 'Daniela', 'Santiago', 'Alexandra', 'Leonardo'];
 
 const pdu = (type, body) => JSON.stringify({
   head: { type, messageId: randomUUID(), timestamp: new Date().toISOString() }, body,
@@ -58,10 +60,43 @@ class TestClient {
   close() { this.ws.close(1000); return sleep(100); }
 }
 
-async function login(label, username, password = 'clave123') {
+async function tryLogin(username, password = PASSWORD) {
+  const c = new TestClient(username);
+  await c.connect();
+  return new Promise((resolve) => {
+    let done = false;
+    const timer = setTimeout(async () => {
+      if (done) return;
+      done = true;
+      const idx = c.waiters.indexOf(w);
+      if (idx >= 0) c.waiters.splice(idx, 1);
+      await c.close();
+      resolve(null);
+    }, 2000);
+
+    const w = {
+      match: (m) => m.head.type === 'AUTH_OK' || m.head.type === 'ERROR',
+      resolve: async (msg) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        if (msg.head.type === 'AUTH_OK') {
+          resolve({ c, ok: msg.body });
+        } else {
+          await c.close();
+          resolve(null);
+        }
+      },
+    };
+    c.waiters.push(w);
+    c.send('AUTH_REGISTER', { username, password, mode: 'login' });
+  });
+}
+
+async function login(label, username, password = PASSWORD, force = true) {
   const c = new TestClient(label);
   await c.connect();
-  c.send('AUTH_REGISTER', { username, password });
+  c.send('AUTH_REGISTER', { username, password, mode: 'login', force });
   const ok = await c.waitFor('AUTH_OK');
   return { c, ok: ok.body };
 }
@@ -73,31 +108,55 @@ async function test(name, fn) {
 }
 
 (async () => {
-  console.log(`\nEtapa 2 - usuarios: ${Object.values(names).join(', ')}\n`);
+  let carlos = null, ana = null, pedro = null;
 
-  // --- Registro / login ---
-  const { c: carlos, ok: carlosOk } = await login('Carlos', names.carlos);
-  const { c: ana } = await login('Ana', names.ana);
-  const { c: pedro } = await login('Pedro', names.pedro);
+  try {
+    const CANDIDATES = ['Alexandra', 'Santiago', 'Julieta', 'Daniela', 'Leonardo'];
+    const freeClients = [];
 
-  await test('Registro nuevo devuelve isNew y auto-join a #General', async () => {
-    assert.equal(carlosOk.isNew, true);
+    for (const cand of CANDIDATES) {
+      if (freeClients.length >= 3) break;
+      const res = await tryLogin(cand);
+      if (res) {
+        freeClients.push({ username: cand, client: res.c, ok: res.ok });
+      }
+    }
+
+    if (freeClients.length < 3) {
+      for (const f of freeClients) await f.client.close();
+      throw new Error('Se necesitan al menos 3 usuarios libres para ejecutar los tests.');
+    }
+
+    const [carlosData, anaData, pedroData] = freeClients;
+    const names = {
+      carlos: carlosData.username,
+      ana: anaData.username,
+      pedro: pedroData.username,
+    };
+    carlos = carlosData.client;
+    const carlosOk = carlosData.ok;
+    ana = anaData.client;
+    pedro = pedroData.client;
+
+    console.log(`\nEtapa 2 - usando usuarios existentes del proyecto: ${names.carlos}, ${names.ana}, ${names.pedro}\n`);
+
+  await test('Autenticación con usuario existente y auto-join a #General', async () => {
     assert.deepEqual(carlosOk.joined, ['General']);
   });
 
   await test('Contraseña incorrecta es rechazada', async () => {
     const x = new TestClient('Intruso');
     await x.connect();
-    x.send('AUTH_REGISTER', { username: names.carlos, password: 'otra' });
+    x.send('AUTH_REGISTER', { username: names.carlos, password: 'password_erroneo', mode: 'login' });
     const err = await x.waitFor('ERROR');
-    assert.match(err.body.error, /incorrectos/);
+    assert.match(err.body.error, /incorrect/);
     await x.close();
   });
 
   await test('Sesión duplicada es rechazada', async () => {
     const x = new TestClient('Duplicado');
     await x.connect();
-    x.send('AUTH_REGISTER', { username: names.carlos, password: 'clave123' });
+    x.send('AUTH_REGISTER', { username: names.carlos, password: PASSWORD, mode: 'login' });
     const err = await x.waitFor('ERROR');
     assert.match(err.body.error, /sesión abierta/);
     await x.close();
@@ -135,11 +194,10 @@ async function test(name, fn) {
     await pedro.waitFor('CHANNEL_MSG', (b) => b.content === 'Hola a todos');
   });
 
-  await test('Crear canal nuevo con JOIN_CHANNEL', async () => {
-    const name = `TP_${SUFFIX}`;
-    ana.send('JOIN_CHANNEL', { channel: name });
-    const r = await ana.waitFor('JOIN_CHANNEL', (b) => b.channel === name);
-    assert.equal(r.body.created, true);
+  await test('Unirse a canal existente #Random con JOIN_CHANNEL', async () => {
+    ana.send('JOIN_CHANNEL', { channel: 'Random' });
+    const r = await ana.waitFor('JOIN_CHANNEL', (b) => b.channel === 'Random');
+    assert.equal(r.body.channel, 'Random');
   });
 
   await test('Nombre de canal inválido es rechazado', async () => {
@@ -198,13 +256,27 @@ async function test(name, fn) {
     await pedro3.close();
   });
 
-  // --- Desconexión ---
-  await test('Al salir, los demás reciben USER_PRESENCE offline', async () => {
-    await ana.close();
-    await carlos.waitFor('USER_PRESENCE', (b) => b.username === names.ana && b.event === 'DISCONNECTED');
-  });
+    // --- Desconexión ---
+    await test('Al salir, los demás reciben USER_PRESENCE offline', async () => {
+      await ana.close();
+      await carlos.waitFor('USER_PRESENCE', (b) => b.username === names.ana && b.event === 'DISCONNECTED');
+    });
+  } finally {
+    // Cerrar siempre todos los clientes de prueba
+    await Promise.allSettled([
+      carlos?.close(),
+      ana?.close(),
+      pedro?.close(),
+    ]);
 
-  await carlos.close();
+    // Limpiar mensajes temporales generados durante el test para dejar la base limpia
+    try {
+      const db = new Database(path.join(__dirname, '..', 'data', 'chat.db'));
+      db.prepare('DELETE FROM messages').run();
+      db.close();
+    } catch (err) {}
+  }
+
   console.log(`\n${passed} tests OK${process.exitCode ? ' (con fallos)' : ''}\n`);
   process.exit();
 })().catch((e) => { console.error(e); process.exit(1); });

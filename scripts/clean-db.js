@@ -85,22 +85,37 @@ if (userArgIndex >= 0 && args[userArgIndex + 1]) {
   process.exit(0);
 }
 
+const crypto = require('crypto');
+
 // Por defecto o con --all / reset-db: Limpieza total
 console.log('[CLEAN-DB] Ejecutando reinicio completo de base de datos...');
 
 db.transaction(() => {
+  const now = new Date().toISOString();
+
   // 1. Borrar todos los mensajes
   db.prepare('DELETE FROM messages').run();
 
-  // 2. Borrar usuarios de prueba
+  // 2. Restablecer usuarios oficiales con contraseña '1234'
   db.prepare('DELETE FROM users').run();
+  const DEFAULT_USERS = ['Julieta', 'Daniela', 'Leonardo', 'Alexandra', 'Santiago'];
+  const DEFAULT_SALT = Buffer.from('87e942f9a87027768ec01ea905123ff8', 'hex');
+  const DEFAULT_HASH = crypto.scryptSync('1234', DEFAULT_SALT, 64);
+  const DEFAULT_PASSWORD_HASH = `scrypt$${DEFAULT_SALT.toString('hex')}$${DEFAULT_HASH.toString('hex')}`;
+
+  const insertUser = db.prepare(`
+    INSERT INTO users (id, username, password_hash, status, avatar, created_at, last_seen)
+    VALUES (?, ?, ?, 'Disponible', NULL, ?, ?)
+  `);
+  for (const username of DEFAULT_USERS) {
+    insertUser.run('u_' + username.toLowerCase(), username, DEFAULT_PASSWORD_HASH, now, now);
+  }
 
   // 3. Dejar solo los canales por defecto
-  db.prepare("DELETE FROM channels WHERE name NOT IN ('General', 'Redes', 'Random')").run();
+  db.prepare("DELETE FROM channels WHERE name NOT IN ('General', 'Random', 'Redes')").run();
 
   // Asegurar que existan los canales por defecto
   const insertCh = db.prepare('INSERT OR IGNORE INTO channels (name, created_by, created_at) VALUES (?, NULL, ?)');
-  const now = new Date().toISOString();
   for (const ch of DEFAULT_CHANNELS) {
     insertCh.run(ch, now);
   }

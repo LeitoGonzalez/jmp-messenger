@@ -84,7 +84,37 @@ npm start            # Servidor en http://localhost:3000
   1. Averiguá tu IP local ejecutando `ipconfig` (ej: `192.168.1.45`).
   2. En el navegador del otro dispositivo entrá a `http://192.168.1.45:3000`.
 
-### 3. Log de Auditoría en Tiempo Real
+### 3. Usuarios y Canales Precargados
+Al descargar el proyecto e iniciar el servidor por primera vez, el sistema inicializa automáticamente la base de datos relacional con los siguientes canales y usuarios oficiales:
+
+- **Canales por defecto:**
+  - `#General` (canal público principal con auto-join)
+  - `#Random`
+  - `#Redes`
+- **Usuarios precargados (contraseña para todos: `1234`):**
+  - `Julieta`
+  - `Daniela`
+  - `Leonardo`
+  - `Alexandra`
+  - `Santiago`
+
+> **Nota:** La interfaz web cuenta con pestañas diferenciadas para **Iniciar Sesión** (solo admite credenciales válidas existentes) y **Crear Cuenta** (para registrar nuevos usuarios). Además, mantiene la sesión persistente en `localStorage` ante recargas y es 100% responsive en pantallas móviles.
+
+### 4. Reiniciar o Administrar la Base de Datos
+Para restaurar la base de datos a su estado limpio original (dejando únicamente los 5 usuarios y 3 canales oficiales, y eliminando mensajes o archivos de prueba):
+
+```bash
+npm run reset-db     # Limpieza total y reinicio a valores de fábrica
+```
+
+Otras opciones de administración por consola:
+```bash
+node scripts/clean-db.js --list              # Listar canales y usuarios registrados
+node scripts/clean-db.js --channel <nombre>  # Eliminar un canal específico y sus mensajes
+node scripts/clean-db.js --user <username>   # Eliminar un usuario específico y sus mensajes
+```
+
+### 5. Log de Auditoría en Tiempo Real
 Para la defensa frente a los docentes, abrí una terminal paralela:
 
 ```powershell
@@ -95,11 +125,11 @@ Get-Content server\server.log -Wait -Encoding UTF8
 tail -f server/server.log
 ```
 
-### 4. Tests Automatizados
+### 6. Tests Automatizados
 Para verificar la integridad del backend en cualquier momento:
 
 ```bash
-npm test             # Ejecuta los 17 tests automáticos end-to-end
+npm test             # Ejecuta los 17 tests automáticos end-to-end usando los usuarios del proyecto
 ```
 
 ---
@@ -125,6 +155,7 @@ chat-proy/
 │   ├── styles.css          <- Estilos Apple Minimalista (macOS Dark, iMessage)
 │   └── app.js              <- Lógica cliente, WebSocket JMP, Canvas y Uploads
 ├── scripts/
+│   ├── clean-db.js         <- Script de reinicio o administración de la base de datos
 │   ├── test-client.js      <- Cliente de consola interactivo para pruebas
 │   └── test-etapa2.js      <- Suite de 17 tests automáticos end-to-end
 └── docs/                   <- Documentación técnica académica para la defensa
