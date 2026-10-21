@@ -101,19 +101,45 @@ async function onAuthRegister(ctx, body) {
   let user, isNew = false;
   try {
     user = storage.getUserByName(username);
-    if (user) {
+    const mode = typeof body.mode === 'string' ? body.mode.toLowerCase() : null;
+
+    if (mode === 'login') {
+      // Modo LOGIN estricto: el usuario DEBE existir en la base de datos
+      if (!user) {
+        logger.warn(ctx.addr, 'AUTH_FAIL', `Intento de login con usuario inexistente: '${username}'.`);
+        return sendError(ctx, 'El usuario no existe. Seleccioná "Crear Cuenta" para registrarte.', TYPES.AUTH_REGISTER);
+      }
       if (!(await verifyPassword(password, user.password_hash))) {
         logger.warn(ctx.addr, 'AUTH_FAIL', `Contraseña incorrecta para '${username}'.`);
-        return sendError(ctx, 'Usuario o contraseña incorrectos', TYPES.AUTH_REGISTER);
+        return sendError(ctx, 'Contraseña incorrecta', TYPES.AUTH_REGISTER);
       }
-    } else {
+    } else if (mode === 'register') {
+      // Modo REGISTRO estricto: el usuario NO debe existir previamente
+      if (user) {
+        logger.warn(ctx.addr, 'AUTH_FAIL', `Intento de registro con usuario ya existente: '${username}'.`);
+        return sendError(ctx, `El usuario '${username}' ya está registrado. Iniciá sesión con tu contraseña.`, TYPES.AUTH_REGISTER);
+      }
       const passwordHash = await hashPassword(password);
-      // Re-chequeo: otro socket pudo registrar el mismo nombre durante el await
       if (storage.getUserByName(username)) {
         return sendError(ctx, 'Ese usuario acaba de ser registrado, probá de nuevo', TYPES.AUTH_REGISTER);
       }
       user = storage.createUser({ username, passwordHash });
       isNew = true;
+    } else {
+      // Modo legacy / backward compatibility (para scripts y tests automáticos sin campo mode)
+      if (user) {
+        if (!(await verifyPassword(password, user.password_hash))) {
+          logger.warn(ctx.addr, 'AUTH_FAIL', `Contraseña incorrecta para '${username}'.`);
+          return sendError(ctx, 'Usuario o contraseña incorrectos', TYPES.AUTH_REGISTER);
+        }
+      } else {
+        const passwordHash = await hashPassword(password);
+        if (storage.getUserByName(username)) {
+          return sendError(ctx, 'Ese usuario acaba de ser registrado, probá de nuevo', TYPES.AUTH_REGISTER);
+        }
+        user = storage.createUser({ username, passwordHash });
+        isNew = true;
+      }
     }
   } finally {
     ctx.authPending = false;

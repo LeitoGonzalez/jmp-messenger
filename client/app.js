@@ -296,6 +296,18 @@
       renderUsersList();
     }
 
+    // Pre-cargar automáticamente el último mensaje de cada chat para ordenarlos de inmediato
+    if (state.channels && state.channels.length > 0) {
+      state.channels.forEach((ch) => {
+        sendPdu('FETCH_HISTORY', { targetType: 'CHANNEL', targetId: ch.name, limit: 1 });
+      });
+    }
+    if (state.users && state.users.length > 0) {
+      state.users.forEach((u) => {
+        sendPdu('FETCH_HISTORY', { targetType: 'PRIVATE', targetId: u.username, limit: 1 });
+      });
+    }
+
     // Seleccionar #General por defecto (sin forzar pantalla de chat en mobile)
     selectConversation('CHANNEL', 'General', '#General', 'Canal público principal', null, true, false);
   }
@@ -1018,6 +1030,7 @@
       sendPdu('AUTH_REGISTER', {
         username,
         password,
+        mode: isRegisterMode ? 'register' : 'login',
         status: isRegisterMode && status ? status : 'Online',
         avatar: isRegisterMode ? tempAuthAvatarBase64 : null,
       });
@@ -1159,6 +1172,7 @@
           sendPdu('AUTH_REGISTER', {
             username: creds.username,
             password: creds.password,
+            mode: 'login',
           });
         });
       }

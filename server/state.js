@@ -33,10 +33,16 @@ function isOnline(userId) {
   return clients.has(userId);
 }
 
-/** Busca el nombre "canónico" de un canal sin distinguir mayúsculas. */
+/** Busca el nombre "canónico" de un canal sin distinguir mayúsculas, validando existencia en SQLite. */
 function resolveChannel(name) {
   const lower = name.toLowerCase();
-  for (const key of channels.keys()) if (key.toLowerCase() === lower) return key;
+  const dbChannels = storage.listChannels();
+  for (const dbName of dbChannels) {
+    if (dbName.toLowerCase() === lower) {
+      if (!channels.has(dbName)) channels.set(dbName, new Set());
+      return dbName;
+    }
+  }
   return null;
 }
 
@@ -46,6 +52,7 @@ function createChannel(name) {
 }
 
 function joinChannel(channel, userId) {
+  if (!channels.has(channel)) channels.set(channel, new Set());
   channels.get(channel).add(userId);
 }
 
@@ -80,6 +87,17 @@ function publicUsers() {
 }
 
 function channelList() {
+  const dbChannels = new Set(storage.listChannels().map((n) => n.toLowerCase()));
+  // Purgar de memoria cualquier canal que haya sido eliminado de SQLite
+  for (const name of channels.keys()) {
+    if (!dbChannels.has(name.toLowerCase())) {
+      channels.delete(name);
+    }
+  }
+  // Asegurar que los canales de SQLite estén presentes
+  for (const dbName of storage.listChannels()) {
+    if (!channels.has(dbName)) channels.set(dbName, new Set());
+  }
   return [...channels].map(([name, members]) => ({ name, members: members.size }));
 }
 
