@@ -93,8 +93,9 @@ console.log('[CLEAN-DB] Ejecutando reinicio completo de base de datos...');
 db.transaction(() => {
   const now = new Date().toISOString();
 
-  // 1. Borrar todos los mensajes
+  // 1. Borrar todos los mensajes (y membresías de canales guardadas)
   db.prepare('DELETE FROM messages').run();
+  try { db.prepare('DELETE FROM channel_members').run(); } catch (e) { /* tabla aún no creada */ }
 
   // 2. Restablecer usuarios oficiales con contraseña '1234'
   db.prepare('DELETE FROM users').run();

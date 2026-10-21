@@ -110,6 +110,16 @@ async function test(name, fn) {
 (async () => {
   let carlos = null, ana = null, pedro = null;
 
+  // Marca de agua: al final solo se borran los mensajes creados por esta corrida
+  let baselineRowid = 0;
+  let baselineMemberRowid = 0;
+  try {
+    const d = new Database(path.join(__dirname, '..', 'data', 'chat.db'), { readonly: true });
+    baselineRowid = d.prepare('SELECT COALESCE(MAX(rowid), 0) AS m FROM messages').get().m;
+    baselineMemberRowid = d.prepare('SELECT COALESCE(MAX(rowid), 0) AS m FROM channel_members').get().m;
+    d.close();
+  } catch (err) {}
+
   try {
     const CANDIDATES = ['Alexandra', 'Santiago', 'Julieta', 'Daniela', 'Leonardo'];
     const freeClients = [];
@@ -272,7 +282,8 @@ async function test(name, fn) {
     // Limpiar mensajes temporales generados durante el test para dejar la base limpia
     try {
       const db = new Database(path.join(__dirname, '..', 'data', 'chat.db'));
-      db.prepare('DELETE FROM messages').run();
+      db.prepare('DELETE FROM messages WHERE rowid > ?').run(baselineRowid);
+      db.prepare('DELETE FROM channel_members WHERE rowid > ?').run(baselineMemberRowid);
       db.close();
     } catch (err) {}
   }

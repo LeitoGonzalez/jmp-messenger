@@ -28,13 +28,33 @@ const UPLOADS_DIR = path.join(__dirname, 'uploads');
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
 app.use(express.static(path.join(__dirname, '..', 'client')));
-app.use('/uploads', express.static(UPLOADS_DIR));
-app.use(express.json({ limit: '10mb' }));
+// Solo estas extensiones pueden subirse. Las imágenes se muestran inline; el resto se fuerza a descarga
+// (evita que un .html/.svg subido se ejecute en el mismo origen que la app).
+const INLINE_IMAGES = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
+const ALLOWED_EXT = new Set([
+  ...INLINE_IMAGES,
+  '.pdf', '.txt', '.csv', '.md', '.zip', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+]);
+
+app.use('/uploads', express.static(UPLOADS_DIR, {
+  setHeaders: (res, filePath) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+    if (!INLINE_IMAGES.has(path.extname(filePath).toLowerCase())) {
+      res.setHeader('Content-Disposition', 'attachment');
+    }
+  },
+}));
+// 13 MB: un archivo de 9 MB en Base64 pesa ~12 MB
+app.use(express.json({ limit: '13mb' }));
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, clients: state.clients.size }));
 
 app.post('/api/upload', (req, res) => {
   try {
+    if (!handlers.isValidToken(req.get('x-session-token'))) {
+      return res.status(401).json({ ok: false, error: 'Sesión inválida: iniciá sesión para subir archivos' });
+    }
     const { fileName, fileData } = req.body || {};
     if (!fileName || typeof fileName !== 'string' || !fileData || typeof fileData !== 'string') {
       return res.status(400).json({ ok: false, error: 'Parámetros "fileName" y "fileData" requeridos' });
@@ -48,7 +68,10 @@ app.post('/api/upload', (req, res) => {
       return res.status(400).json({ ok: false, error: 'El archivo está vacío o el formato Base64 es inválido' });
     }
 
-    const ext = path.extname(fileName).slice(0, 10).replace(/[^a-zA-Z0-9.]/g, '') || '.bin';
+    const ext = path.extname(fileName).toLowerCase();
+    if (!ALLOWED_EXT.has(ext)) {
+      return res.status(400).json({ ok: false, error: 'Tipo de archivo no permitido' });
+    }
     const uniqueName = `${randomUUID()}${ext}`;
     const targetPath = path.join(UPLOADS_DIR, uniqueName);
 

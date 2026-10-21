@@ -54,6 +54,12 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_msg_target  ON messages(target_type, target_id, timestamp);
   CREATE INDEX IF NOT EXISTS idx_msg_pending ON messages(target_id, delivered) WHERE delivered = 0;
+
+  CREATE TABLE IF NOT EXISTS channel_members (
+    user_id TEXT NOT NULL,
+    channel TEXT NOT NULL COLLATE NOCASE,
+    PRIMARY KEY (user_id, channel)
+  );
 `);
 
 // Canales por defecto del proyecto
@@ -205,11 +211,20 @@ function getLastActivity(userId) {
   return activity;
 }
 
+// ---------- Membresía de canales (persistente) ----------
+const addMemberStmt = db.prepare('INSERT OR IGNORE INTO channel_members (user_id, channel) VALUES (?, ?)');
+const removeMemberStmt = db.prepare('DELETE FROM channel_members WHERE user_id = ? AND channel = ?');
+const membershipsStmt = db.prepare('SELECT channel FROM channel_members WHERE user_id = ?');
+function addMember(userId, channel) { addMemberStmt.run(userId, channel); }
+function removeMember(userId, channel) { removeMemberStmt.run(userId, channel); }
+function getMemberships(userId) { return membershipsStmt.all(userId).map((r) => r.channel); }
+
 function close() { db.close(); }
 
 module.exports = {
   getUserByName, getUserById, createUser, updateProfile, touchUser, listUsers,
   listChannels, getChannel, createChannel,
   saveMessage, getPendingFor, markDelivered, getHistory, getLastActivity,
+  addMember, removeMember, getMemberships,
   close,
 };

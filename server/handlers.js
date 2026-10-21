@@ -6,6 +6,7 @@
  *          PRIVATE_MSG (unicast + entrega diferida), FETCH_HISTORY.
  */
 const path = require('path');
+const crypto = require('crypto');
 const { build, TYPES } = require('./protocol');
 const state = require('./state');
 const storage = require('./storage');
@@ -17,6 +18,21 @@ const CHANNEL_RE = /^[\w\-áéíóúñÁÉÍÓÚÑ]{2,24}$/;
 const MIN_PASSWORD = 4;
 const MAX_CONTENT = 4000;
 const DEFAULT_CHANNEL = 'General';
+
+// Validación estricta de datos que luego el cliente renderiza (evita XSS almacenado)
+const AVATAR_RE = /^data:image\/(png|jpe?g|gif|webp);base64,[A-Za-z0-9+/=]+$/;
+const FILE_URL_RE = /^\/uploads\/[A-Za-z0-9-]+\.[A-Za-z0-9]{1,10}$/;
+
+// Tokens de sesión (en memoria): permiten reanudar sesión y autorizar /api/upload
+// sin guardar la contraseña en el navegador.
+const tokens = new Map(); // token -> userId
+function issueToken(userId) {
+  for (const [t, id] of tokens) if (id === userId) tokens.delete(t);
+  const token = crypto.randomBytes(24).toString('hex');
+  tokens.set(token, userId);
+  return token;
+}
+function isValidToken(token) { return typeof token === 'string' && tokens.has(token); }
 
 // ======================================================================
 // Utilidades de envío
@@ -101,9 +117,14 @@ async function onAuthRegister(ctx, body) {
   let user, isNew = false;
   try {
     user = storage.getUserByName(username);
-    const mode = typeof body.mode === 'string' ? body.mode.toLowerCase() : null;
+    const mode = typeof body.mode === 'string' ? body.mode.toLowerCase() : 'login';
 
-    if (mode === 'login') {
+    if (mode === 'resume') {
+      // Reanudar sesión con el token del login anterior (el campo password lleva el token)
+      if (!user || tokens.get(password) !== user.id) {
+        return sendError(ctx, 'Sesión expirada, iniciá sesión nuevamente', TYPES.AUTH_REGISTER);
+      }
+    } else if (mode === 'login') {
       // Modo LOGIN estricto: el usuario DEBE existir en la base de datos
       if (!user) {
         logger.warn(ctx.addr, 'AUTH_FAIL', `Intento de login con usuario inexistente: '${username}'.`);
@@ -126,20 +147,7 @@ async function onAuthRegister(ctx, body) {
       user = storage.createUser({ username, passwordHash });
       isNew = true;
     } else {
-      // Modo legacy / backward compatibility (para scripts y tests automáticos sin campo mode)
-      if (user) {
-        if (!(await verifyPassword(password, user.password_hash))) {
-          logger.warn(ctx.addr, 'AUTH_FAIL', `Contraseña incorrecta para '${username}'.`);
-          return sendError(ctx, 'Usuario o contraseña incorrectos', TYPES.AUTH_REGISTER);
-        }
-      } else {
-        const passwordHash = await hashPassword(password);
-        if (storage.getUserByName(username)) {
-          return sendError(ctx, 'Ese usuario acaba de ser registrado, probá de nuevo', TYPES.AUTH_REGISTER);
-        }
-        user = storage.createUser({ username, passwordHash });
-        isNew = true;
-      }
+      return sendError(ctx, `Modo de autenticación inválido: '${mode}'`, TYPES.AUTH_REGISTER);
     }
   } finally {
     ctx.authPending = false;
@@ -153,7 +161,7 @@ async function onAuthRegister(ctx, body) {
 
   // Perfil opcional enviado en el registro/login
   const status = typeof body.status === 'string' ? body.status.slice(0, 30) : 'Online';
-  const avatar = typeof body.avatar === 'string' && body.avatar.startsWith('data:image/') ? body.avatar : null;
+  const avatar = typeof body.avatar === 'string' && AVATAR_RE.test(body.avatar) ? body.avatar : null;
   storage.updateProfile(user.id, { status, avatar });
   storage.touchUser(user.id);
 
@@ -171,16 +179,23 @@ async function onAuthRegister(ctx, body) {
   logger.info(ctx.addr, 'AUTH',
     `Usuario '${user.username}' ${isNew ? 'registrado' : 'autenticado'} exitosamente (${user.id}).`);
 
-  // Auto-join a #General
+  // Auto-join a #General y restauración de los canales a los que el usuario ya pertenecía
   state.joinChannel(DEFAULT_CHANNEL, user.id);
-  logger.action(user.username, 'JOIN_CHANNEL', `Unido automáticamente a canal '#${DEFAULT_CHANNEL}'.`);
+  storage.addMember(user.id, DEFAULT_CHANNEL);
+  const joined = new Set([DEFAULT_CHANNEL]);
+  for (const name of storage.getMemberships(user.id)) {
+    const ch = state.resolveChannel(name);
+    if (ch) { state.joinChannel(ch, user.id); joined.add(ch); }
+  }
+  logger.action(user.username, 'JOIN_CHANNEL', `Canales restaurados: ${[...joined].map((c) => '#' + c).join(', ')}.`);
 
   // Respuesta al propio cliente
   safeSend(ctx.socket, build(TYPES.AUTH_OK, {
     userId: user.id,
     username: user.username,
     isNew,
-    joined: [DEFAULT_CHANNEL],
+    joined: [...joined],
+    token: issueToken(user.id),
     users: state.publicUsers(),
     channels: state.channelList(),
     lastActivity: storage.getLastActivity(user.id),
@@ -242,7 +257,7 @@ function onProfileUpdate(ctx, body) {
   if (!ctx.userId) return sendError(ctx, 'Debes autenticarte primero', TYPES.PROFILE_UPDATE);
 
   const status = typeof body.status === 'string' && body.status.trim() ? body.status.trim().slice(0, 30) : null;
-  const avatar = typeof body.avatar === 'string' && body.avatar.startsWith('data:image/') ? body.avatar : null;
+  const avatar = typeof body.avatar === 'string' && AVATAR_RE.test(body.avatar) ? body.avatar : null;
 
   if (!status && !avatar) {
     return sendError(ctx, 'Debe proporcionar al menos status o avatar válido', TYPES.PROFILE_UPDATE);
@@ -304,6 +319,7 @@ function onJoinChannel(ctx, body) {
   }
 
   state.joinChannel(channel, ctx.userId);
+  storage.addMember(ctx.userId, channel);
   logger.action(ctx.username, 'JOIN_CHANNEL', `Unido a canal '#${channel}'.`);
 
   safeSend(ctx.socket, build(TYPES.JOIN_CHANNEL, { channel, created, ok: true }));
@@ -318,6 +334,7 @@ function onLeaveChannel(ctx, body) {
   if (!channel || !state.leaveChannel(channel, ctx.userId)) {
     return sendError(ctx, `No sos miembro de '#${body.channel}'`, TYPES.LEAVE_CHANNEL);
   }
+  storage.removeMember(ctx.userId, channel);
   logger.action(ctx.username, 'LEAVE_CHANNEL', `Salió del canal '#${channel}'.`);
 
   safeSend(ctx.socket, build(TYPES.LEAVE_CHANNEL, { channel, ok: true }));
@@ -422,7 +439,12 @@ function onFileOffer(ctx, body) {
   if (!ctx.userId) return sendError(ctx, 'Debes autenticarte primero', TYPES.FILE_OFFER);
 
   const targetType = body.targetType ? body.targetType.toUpperCase() : '';
-  const { fileName, fileUrl, fileSize } = body;
+  const { fileUrl } = body;
+  if (typeof fileUrl !== 'string' || !FILE_URL_RE.test(fileUrl)) {
+    return sendError(ctx, 'URL de archivo inválida (debe ser un archivo subido a /uploads/)', TYPES.FILE_OFFER);
+  }
+  const fileName = String(body.fileName).slice(0, 100);
+  const fileSize = Number.isFinite(body.fileSize) && body.fileSize >= 0 ? body.fileSize : 0;
 
   if (targetType === 'CHANNEL') {
     const channel = state.resolveChannel(cleanChannelName(body.targetId));
@@ -527,4 +549,4 @@ function dispatch(ctx, pdu) {
   }
 }
 
-module.exports = { dispatch, onDisconnect, safeSend, broadcast };
+module.exports = { dispatch, onDisconnect, safeSend, broadcast, isValidToken };

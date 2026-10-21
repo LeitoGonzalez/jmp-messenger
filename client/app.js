@@ -186,10 +186,11 @@
       clearTimeout(state.reconnectTimer);
       state.reconnectTimer = setTimeout(() => {
         connectWebSocket(() => {
-          if (state.currentUser && state.currentUser.password) {
+          if (state.currentUser && state.currentUser.token) {
             sendPdu('AUTH_REGISTER', {
               username: state.currentUser.username,
-              password: state.currentUser.password,
+              password: state.currentUser.token,
+              mode: 'resume',
               status: state.currentUser.status,
             });
           }
@@ -280,20 +281,19 @@
     dom.authModal.classList.add('hidden');
     dom.appLayout.classList.remove('hidden');
 
-    const password = dom.authPassword.value || (JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}').password);
-
     state.currentUser = {
       userId: body.userId,
       username: body.username,
       status: 'Online',
       avatar: null,
-      password,
+      token: body.token,
     };
 
-    // Guardar sesión persistente para recargas y multi-pestaña
+    // Guardar sesión persistente (solo usuario + token, nunca la contraseña)
+    dom.authPassword.value = '';
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       username: body.username,
-      password,
+      token: body.token,
     }));
 
     // Solicitar permiso de notificaciones del navegador
@@ -506,8 +506,8 @@
     if (dom.authModal.classList.contains('hidden')) {
       alert(`Aviso: ${msg}`);
     } else {
-      // Si falló el auto-login guardado, limpiar storage
-      localStorage.removeItem(STORAGE_KEY);
+      // Si falló el auto-login guardado, limpiar storage (salvo que sea un error transitorio de sesión abierta)
+      if (!/sesión abierta/.test(msg)) localStorage.removeItem(STORAGE_KEY);
       dom.authSubmitBtn.querySelector('.btn-text').textContent = 'Continuar';
       dom.authError.textContent = msg;
       dom.authError.classList.remove('hidden');
@@ -722,8 +722,9 @@
       const li = document.createElement('li');
       li.className = `item-row ${isActive ? 'active' : ''}`;
 
-      const avatarHtml = u.avatar
-        ? `<img src="${u.avatar}" class="avatar-circle" style="width:28px;height:28px;">`
+      const safeAvatar = /^data:image\/(png|jpe?g|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(u.avatar || '') ? u.avatar : null;
+      const avatarHtml = safeAvatar
+        ? `<img src="${safeAvatar}" class="avatar-circle" style="width:28px;height:28px;">`
         : `<div class="avatar-circle avatar-placeholder" style="width:28px;height:28px;font-size:12px;">${u.username.charAt(0).toUpperCase()}</div>`;
 
       const timeHtml = lastTs > 0 ? `<span class="item-time">${formatTimeShort(lastTs)}</span>` : '';
@@ -842,18 +843,19 @@
 
     let bodyHtml = '';
 
-    // Detección robusta de archivo (por msgType, fileUrl o URL en content)
-    const isFile = msg.msgType === 'FILE' || Boolean(msg.fileUrl) || (typeof msg.content === 'string' && msg.content.startsWith('/uploads/'));
+    // Solo se trata como archivo una ruta /uploads/<uuid>.<ext> válida; cualquier otra cosa se muestra como texto
+    const candidateUrl = msg.fileUrl || (msg.msgType === 'FILE' ? msg.content : '');
+    const isFile = /^\/uploads\/[A-Za-z0-9-]+\.[A-Za-z0-9]{1,10}$/.test(candidateUrl || '');
 
     if (isFile) {
-      const fileUrl = msg.fileUrl || msg.content;
+      const fileUrl = candidateUrl;
       const rawName = msg.fileName || fileUrl.split('/').pop() || 'archivo_adjunto';
-      const isImg = /\.(png|jpe?g|gif|webp|svg)$/i.test(fileUrl) || /\.(png|jpe?g|gif|webp|svg)$/i.test(rawName);
+      const isImg = /\.(png|jpe?g|gif|webp)$/i.test(fileUrl);
 
       if (isImg) {
         bodyHtml = `
           <div>
-            <img src="${fileUrl}" alt="${escapeHtml(rawName)}" class="image-preview-bubble" onclick="window.open('${fileUrl}', '_blank')" title="Clic para abrir en tamaño completo">
+            <a href="${fileUrl}" target="_blank" rel="noopener"><img src="${fileUrl}" alt="${escapeHtml(rawName)}" class="image-preview-bubble" title="Clic para abrir en tamaño completo"></a>
           </div>
         `;
       } else {
@@ -1004,7 +1006,7 @@
         // 1. Carga fuera de banda vía HTTP POST /api/upload
         const response = await fetch('/api/upload', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'X-Session-Token': state.currentUser.token || '' },
           body: JSON.stringify({
             fileName: file.name,
             fileData,
@@ -1276,17 +1278,19 @@
   if (savedSession) {
     try {
       const creds = JSON.parse(savedSession);
-      if (creds && creds.username && creds.password) {
+      if (creds && creds.username && creds.token) {
         dom.authUsername.value = creds.username;
-        dom.authPassword.value = creds.password;
         dom.authSubmitBtn.querySelector('.btn-text').textContent = 'Reconectando sesión...';
         connectWebSocket(() => {
           sendPdu('AUTH_REGISTER', {
             username: creds.username,
-            password: creds.password,
-            mode: 'login',
+            password: creds.token,
+            mode: 'resume',
           });
         });
+      } else {
+        // Sesión guardada con el formato anterior (con contraseña): se descarta
+        localStorage.removeItem(STORAGE_KEY);
       }
     } catch (e) {
       localStorage.removeItem(STORAGE_KEY);
